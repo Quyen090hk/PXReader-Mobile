@@ -209,6 +209,19 @@ class ReaderViewModel(
         }
     }
 
+    /** Used by the reader bar's scrubber; page counts are intentionally never persisted. */
+    fun navigateToBookProgress(progress: Float) {
+        val reader = state.value.reader ?: return
+        if (reader.chapters.isEmpty()) return
+        val normalized = progress.coerceIn(0f, 1f)
+        val scaled = normalized * reader.chapters.size
+        val chapterIndex = scaled.toInt().coerceIn(0, reader.chapters.lastIndex)
+        val fractionInChapter = (scaled - chapterIndex).coerceIn(0f, 1f)
+        val chapter = reader.chapters[chapterIndex]
+        val char = (chapter.text.length * fractionInChapter).roundToInt()
+        navigateTo(locatorFor(chapter, char, char, reader))
+    }
+
     fun toggleBookmark() {
         val reader = state.value.reader ?: return
         val locator = state.value.locator ?: return

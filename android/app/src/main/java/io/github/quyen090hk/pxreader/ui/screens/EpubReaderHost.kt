@@ -336,7 +336,8 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
     val css = """
         :root{color-scheme:light;background:$background;color:$foreground}
         html,body{margin:0;min-height:100%;background:$background;color:$foreground}
-        body{box-sizing:border-box;width:100vw !important;min-width:100vw !important;max-width:none !important;padding:24px 22px 40px;font-family:$font !important;font-size:${settings.fontScale}rem !important;line-height:${settings.lineHeight} !important;letter-spacing:${settings.letterSpacing}em !important;font-kerning:normal;font-variant-east-asian:proportional-width;line-break:strict;word-break:normal;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;text-autospace:normal}
+        :root{--px-side-gutter:48px}
+        body{box-sizing:border-box;width:100vw !important;min-width:100vw !important;max-width:none !important;padding:36px var(--px-side-gutter) 56px;font-family:$font !important;font-size:${settings.fontScale}rem !important;line-height:${settings.lineHeight} !important;letter-spacing:${settings.letterSpacing}em !important;font-kerning:normal;font-variant-east-asian:proportional-width;line-break:strict;word-break:normal;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;text-autospace:normal}
         p,li,blockquote{text-align:$align;text-justify:inter-ideograph}
         p{margin:0 0 ${settings.paragraphSpacing}em;text-indent:$indent}
         p:empty{min-height:${settings.paragraphSpacing}em}
@@ -346,7 +347,10 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
         table{max-width:100% !important;display:block;overflow:auto} pre{white-space:pre-wrap;word-break:break-word;tab-size:2} code{font-family:monospace;font-size:.9em}
         ruby{ruby-position:over} rt{font-size:.52em;letter-spacing:0} mark[data-px-annotation-id]{color:inherit;border-radius:.16em;padding:0 .03em}
         html.px-paged{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;overflow-x:auto;overflow-y:hidden;scroll-behavior:smooth}
-        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;column-width:calc(100vw - 44px);column-gap:44px;column-fill:auto;overflow:visible}
+        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:0;column-width:100vw;column-gap:0;column-fill:auto;overflow:visible}
+        /* CSS columns fragment the body but only apply body padding to its first and final
+           fragments.  A cloned inner flow gives every virtual page the same real text gutter. */
+        html.px-paged #px-reader-flow{display:block;padding:36px var(--px-side-gutter) 56px;-webkit-box-decoration-break:clone;box-decoration-break:clone}
         html.px-paged h1,html.px-paged h2,html.px-paged h3,html.px-paged figure,html.px-paged pre,html.px-paged table{break-inside:avoid}
         html.px-scroll{overflow-x:hidden;overflow-y:auto;scroll-behavior:smooth}
         html.px-scroll body{max-width:46rem;margin:auto}
@@ -358,6 +362,12 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
           let style = document.getElementById('px-reader-theme');
           if (!style) { style = document.createElement('style'); style.id = 'px-reader-theme'; document.head.appendChild(style); }
           style.textContent = ${JSONObject.quote(css)};
+          let flow = document.getElementById('px-reader-flow');
+          if (!flow && document.body) {
+            flow = document.createElement('main'); flow.id = 'px-reader-flow';
+            Array.from(document.body.childNodes).forEach((node) => flow.appendChild(node));
+            document.body.appendChild(flow);
+          }
           document.documentElement.classList.remove('px-paged','px-scroll');
           document.documentElement.classList.add('px-$mode');
         })();

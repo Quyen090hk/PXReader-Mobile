@@ -9,15 +9,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.outlined.EditNote
+import androidx.compose.material.icons.outlined.FormatSize
 import androidx.compose.material.icons.outlined.Menu
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -33,13 +35,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -53,7 +56,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -124,16 +129,24 @@ private fun ReaderScreen(
     val context = LocalContext.current
     var searchOpen by remember { mutableStateOf(false) }
     var annotationOpen by remember { mutableStateOf(false) }
-    var chromeVisible by remember { mutableStateOf(true) }
+    // Match the familiar e-reader convention: opening a book goes straight to the page, while
+    // the central tap reveals controls only when they are needed.
+    var chromeVisible by remember { mutableStateOf(false) }
     var footnote by remember { mutableStateOf<ReaderFootnote?>(null) }
-    val localView = androidx.compose.ui.platform.LocalView.current
-    DisposableEffect(chromeVisible, context, localView) {
+    var scrubProgress by remember { mutableStateOf(0f) }
+    DisposableEffect(chromeVisible, context) {
         val controller = context.activityOrNull()?.window?.let { window ->
-            WindowInsetsControllerCompat(window, localView)
+            // Use the decor view rather than the Compose subview. Some Android 15+ builds only
+            // honour immersive requests that originate from the window's actual insets target.
+            WindowInsetsControllerCompat(window, window.decorView)
         }
+        controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (chromeVisible) controller?.show(WindowInsetsCompat.Type.systemBars())
         else controller?.hide(WindowInsetsCompat.Type.systemBars())
         onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+    LaunchedEffect(state.locator?.progress) {
+        scrubProgress = state.locator?.progress ?: 0f
     }
     val bookmarkAtCurrentLocation = state.locator?.let { locator ->
         state.bookmarks.any { it.chapterIndex == locator.chapterIndex && it.charStart == locator.charStart }
@@ -192,24 +205,15 @@ private fun ReaderScreen(
     ) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
+            // In distraction-free mode, the reader owns every pixel. The controls get normal
+            // system-bar insets again as soon as the user taps the centre zone.
+            contentWindowInsets = if (chromeVisible) ScaffoldDefaults.contentWindowInsets else WindowInsets(0, 0, 0, 0),
             topBar = {
                 if (chromeVisible) {
                     CenterAlignedTopAppBar(
                         title = { Text(reader?.document?.title ?: "PXReader", maxLines = 1) },
                         navigationIcon = {
                             IconButton(onClick = { model.persistCurrentPosition(); onBack() }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回书架") }
-                        },
-                        actions = {
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Outlined.Menu, contentDescription = "目录") }
-                            IconButton(onClick = model::toggleBookmark) {
-                                Icon(
-                                    if (bookmarkAtCurrentLocation) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkAdd,
-                                    contentDescription = if (bookmarkAtCurrentLocation) "移除书签" else "添加书签",
-                                )
-                            }
-                            IconButton(onClick = { searchOpen = true }) { Icon(Icons.Outlined.Search, contentDescription = "搜索全文") }
-                            IconButton(onClick = { reader?.let { onAnnotations(it.document.id) } }) { Icon(Icons.Outlined.MoreVert, contentDescription = "批注") }
-                            IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, contentDescription = "阅读设置") }
                         },
                     )
                 }
@@ -223,21 +227,6 @@ private fun ReaderScreen(
                 reader != null && state.locator != null -> {
                     val chapter = reader.chapters.getOrNull(state.locator.chapterIndex) ?: reader.chapters.first()
                     Column(Modifier.fillMaxSize().padding(padding)) {
-                        if (chromeVisible) {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-                            ) {
-                                Text(
-                                    chapter.title,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-                                )
-                            }
-                        }
                         Box(Modifier.weight(1f).fillMaxWidth()) {
                             if (reader.format == DocumentFormat.TXT) {
                                 TxtReaderHost(
@@ -295,23 +284,37 @@ private fun ReaderScreen(
                         }
                         if (chromeVisible) {
                             Surface(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                                shape = MaterialTheme.shapes.medium,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.88f),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
                             ) {
-                                Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text("第 ${chapter.index + 1} / ${reader.chapters.size} 章", style = MaterialTheme.typography.labelMedium)
+                                        Text(chapter.title, style = MaterialTheme.typography.labelMedium, maxLines = 1, modifier = Modifier.weight(1f))
                                         Text("${clockLabel()} · 余 ${remainingTimeLabel(chapter, state.locator)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    LinearProgressIndicator(
-                                        progress = { state.locator.progress.coerceIn(0f, 1f) },
+                                    Slider(
+                                        value = scrubProgress,
+                                        onValueChange = { scrubProgress = it },
+                                        onValueChangeFinished = { model.navigateToBookProgress(scrubProgress) },
+                                        valueRange = 0f..1f,
                                         modifier = Modifier.fillMaxWidth(),
                                     )
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        TextButton(onClick = model::previousChapter, enabled = chapter.index > 0) { Text("上一章") }
-                                        Text("${(state.locator.progress * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 12.dp))
-                                        TextButton(onClick = model::nextChapter, enabled = chapter.index < reader.chapters.lastIndex) { Text("下一章") }
+                                        ReaderBarAction(Icons.Outlined.Menu, "目录") { scope.launch { drawerState.open() } }
+                                        ReaderBarAction(
+                                            if (bookmarkAtCurrentLocation) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkAdd,
+                                            if (bookmarkAtCurrentLocation) "已书签" else "书签",
+                                            model::toggleBookmark,
+                                        )
+                                        ReaderBarAction(Icons.Outlined.Search, "搜索") { searchOpen = true }
+                                        ReaderBarAction(Icons.Outlined.EditNote, "批注") { reader.let { onAnnotations(it.document.id) } }
+                                        ReaderBarAction(Icons.Outlined.FormatSize, "排版", onSettings)
+                                    }
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        TextButton(onClick = model::previousChapter, enabled = chapter.index > 0) { Text("‹ 上章") }
+                                        Text("第 ${chapter.index + 1} / ${reader.chapters.size} 章 · ${(state.locator.progress * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 12.dp))
+                                        TextButton(onClick = model::nextChapter, enabled = chapter.index < reader.chapters.lastIndex) { Text("下章 ›") }
                                     }
                                 }
                             }
@@ -330,6 +333,23 @@ private fun ReaderScreen(
                 Text(note.text.ifBlank { "此注释没有可显示的内容。" }, modifier = Modifier.padding(top = 12.dp, bottom = 28.dp))
             }
         }
+    }
+}
+
+/**
+ * The reader bar intentionally uses labelled actions instead of a cryptic icon-only toolbar.
+ * It mirrors the e-reader convention of keeping all reading tools in one temporary bottom tray.
+ */
+@Composable
+private fun RowScope.ReaderBarAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier.weight(1f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        IconButton(onClick = onClick) {
+            Icon(icon, contentDescription = label)
+        }
+        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 
