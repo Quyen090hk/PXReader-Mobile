@@ -32,7 +32,7 @@ The project includes a Gradle wrapper pinned to Gradle 9.5.0 and uses Android Gr
 
 ## Local library discovery
 
-Use **扫描书籍** in the library to choose either a folder or the whole shared device storage. Folder scans use Android's Storage Access Framework and retain only the selected tree's read grant. Full-device scans intentionally exclude `Android/` and require the user to enable **All files access** in the system settings; this is necessary on modern Android versions to inspect arbitrary EPUB and TXT paths.
+Use **扫描书籍** in the library to create a small scan plan: select a folder or the whole shared device storage, choose TXT and/or EPUB, set a minimum file size, and optionally apply 收藏 or comma-separated category tags to new books. Folder scans use Android's Storage Access Framework and retain only the selected tree's read grant. Full-device scans intentionally exclude `Android/` and require the user to enable **All files access** in the system settings; this is necessary on modern Android versions to inspect arbitrary EPUB and TXT paths. The system file picker remains available as a fallback for individual files.
 
 Every discovered file goes through the same importer as a manual import: PXReader hashes it, checks the supported format, extracts title/author/chapter metadata, extracts an EPUB cover when present, copies the source to private storage, then writes the metadata to Room. The original source URI/path is retained for library provenance, while reading continues to work from the app-private copy.
 

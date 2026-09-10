@@ -37,7 +37,7 @@ class DocumentImporter(
     private val stagingDirectory = File(context.cacheDir, "import-staging").apply { mkdirs() }
     private val reader = DocumentReader(documentsDirectory)
 
-    suspend fun import(uri: Uri, sourcePath: String? = null): ImportOutcome = withContext(Dispatchers.IO) {
+    suspend fun import(uri: Uri, sourcePath: String? = null, initialTags: Set<String> = emptySet()): ImportOutcome = withContext(Dispatchers.IO) {
         val source = sourceInfo(uri)
         val format = identifyFormat(source.name, source.mimeType)
             ?: return@withContext ImportOutcome.Rejected("仅支持 TXT 或 EPUB 文件。")
@@ -86,7 +86,7 @@ class DocumentImporter(
                 coverFileName = coverFileName,
                 byteSize = bytes,
                 contentHash = documentId,
-                tagsJson = JSONArray().toString(),
+                tagsJson = JSONArray(initialTags.map(String::trim).filter(String::isNotEmpty).distinct().sorted()).toString(),
                 chapterCount = metadata.chapterCount,
                 addedAt = now,
                 updatedAt = now,

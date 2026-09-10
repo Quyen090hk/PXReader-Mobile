@@ -10,6 +10,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,7 +34,9 @@ import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -58,6 +64,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,9 +74,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.quyen090hk.pxreader.backup.BackupExporter
 import io.github.quyen090hk.pxreader.data.ReaderRepository
+import io.github.quyen090hk.pxreader.data.DocumentFormat
 import io.github.quyen090hk.pxreader.data.db.DocumentEntity
 import io.github.quyen090hk.pxreader.importer.DocumentImporter
 import io.github.quyen090hk.pxreader.importer.DocumentScanner
+import io.github.quyen090hk.pxreader.importer.ScanOptions
 import io.github.quyen090hk.pxreader.ui.LibraryViewModel
 import io.github.quyen090hk.pxreader.ui.PxReaderViewModelFactory
 import kotlinx.coroutines.flow.StateFlow
@@ -120,14 +129,15 @@ private fun LibraryScreen(
     val backupPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) scope.launch { backupExporter.exportBackup(uri) }
     }
+    var pendingScanOptions by remember { mutableStateOf(ScanOptions()) }
     val treeScanner = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        uri?.let(model::scanTree)
+        uri?.let { model.scanTree(it, pendingScanOptions) }
     }
     val legacyPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) model.scanSharedStorage { }
+        if (granted) model.scanSharedStorage(pendingScanOptions) { }
     }
     val allFilesAccess = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        model.scanSharedStorage { }
+        model.scanSharedStorage(pendingScanOptions) { }
     }
     val requestDeviceScan = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -247,10 +257,16 @@ private fun LibraryScreen(
         )
     }
     if (scanDialogVisible) {
-        ScanDialog(
+        ScanImportDialog(
             onDismiss = { scanDialogVisible = false },
-            onScanFolder = { scanDialogVisible = false; treeScanner.launch(null) },
-            onScanDevice = { scanDialogVisible = false; model.scanSharedStorage(requestDeviceScan) },
+            onConfirm = { scope, options ->
+                pendingScanOptions = options
+                scanDialogVisible = false
+                when (scope) {
+                    ScanScope.FOLDER -> treeScanner.launch(null)
+                    ScanScope.DEVICE -> model.scanSharedStorage(options, requestDeviceScan)
+                }
+            },
         )
     }
 }
@@ -283,19 +299,108 @@ private fun LibraryHero(documentCount: Int, onScan: () -> Unit, onImport: () -> 
     }
 }
 
+private enum class ScanScope { DEVICE, FOLDER }
+
 @Composable
-private fun ScanDialog(onDismiss: () -> Unit, onScanFolder: () -> Unit, onScanDevice: () -> Unit) {
+private fun ScanImportDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (ScanScope, ScanOptions) -> Unit,
+) {
+    var scope by remember { mutableStateOf(ScanScope.DEVICE) }
+    var includeEpub by remember { mutableStateOf(true) }
+    var includeTxt by remember { mutableStateOf(true) }
+    var minimumKb by remember { mutableStateOf("20") }
+    var favourite by remember { mutableStateOf(false) }
+    var category by remember { mutableStateOf("") }
+    val minimumKbValue = minimumKb.toLongOrNull()
+    val selectedFormats = buildSet {
+        if (includeEpub) add(DocumentFormat.EPUB)
+        if (includeTxt) add(DocumentFormat.TXT)
+    }
+    val initialTags = buildSet {
+        if (favourite) add("收藏")
+        category.split(',', '，').map(String::trim).filter(String::isNotEmpty).forEach(::add)
+    }
+    val options = ScanOptions(
+        formats = selectedFormats,
+        minimumBytes = (minimumKbValue ?: 20L) * 1024L,
+        initialTags = initialTags,
+    )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("发现设备中的书籍") },
+        title = { Text("扫描导入") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("指定目录会通过系统文件授权递归扫描；全设备扫描会跳转到系统设置申请“所有文件访问”权限。")
-                Text("扫描只识别 TXT 与 EPUB，并将元数据和阅读副本写入本地书库。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(
+                modifier = Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("扫描范围", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = scope == ScanScope.DEVICE,
+                            onClick = { scope = ScanScope.DEVICE },
+                            label = { Text("设备存储") },
+                        )
+                        FilterChip(
+                            selected = scope == ScanScope.FOLDER,
+                            onClick = { scope = ScanScope.FOLDER },
+                            label = { Text("指定目录") },
+                        )
+                    }
+                    Text(
+                        if (scope == ScanScope.DEVICE) "扫描共享存储中的书籍；首次使用需要系统文件访问授权。" else "通过系统文件选择器授权一个目录，并递归扫描其中的书籍。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("文件类型", style = MaterialTheme.typography.labelLarge)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = includeEpub, onCheckedChange = { includeEpub = it })
+                        Text("EPUB")
+                        Spacer(Modifier.width(14.dp))
+                        Checkbox(checked = includeTxt, onCheckedChange = { includeTxt = it })
+                        Text("TXT")
+                    }
+                }
+                OutlinedTextField(
+                    value = minimumKb,
+                    onValueChange = { value -> minimumKb = value.filter(Char::isDigit).take(6) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("最小文件大小") },
+                    suffix = { Text("KB") },
+                    supportingText = { Text("过滤常见的空文件和临时文件") },
+                    singleLine = true,
+                    isError = minimumKbValue == null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("入库标签", style = MaterialTheme.typography.labelLarge)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = favourite, onCheckedChange = { favourite = it })
+                        Text("收藏")
+                    }
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = { category = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("分类标签（可选）") },
+                        supportingText = { Text("用逗号分隔；仅应用于本次新入库书籍") },
+                        singleLine = true,
+                    )
+                }
             }
         },
-        confirmButton = { TextButton(onClick = onScanDevice) { Text("扫描设备") } },
-        dismissButton = { TextButton(onClick = onScanFolder) { Text("选择目录") } },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(scope, options) },
+                enabled = selectedFormats.isNotEmpty() && minimumKbValue != null,
+            ) {
+                Text(if (scope == ScanScope.DEVICE) "开始扫描" else "选择目录")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 

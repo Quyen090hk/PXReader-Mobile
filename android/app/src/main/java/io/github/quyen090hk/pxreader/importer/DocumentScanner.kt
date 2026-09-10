@@ -32,6 +32,12 @@ data class ScanReport(
     val rejected: Int,
 )
 
+data class ScanOptions(
+    val formats: Set<DocumentFormat> = setOf(DocumentFormat.TXT, DocumentFormat.EPUB),
+    val minimumBytes: Long = 20L * 1024L,
+    val initialTags: Set<String> = emptySet(),
+)
+
 class DocumentScanner(
     private val context: Context,
     private val importer: DocumentImporter,
@@ -43,7 +49,7 @@ class DocumentScanner(
             context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         }
 
-    suspend fun scanTree(root: Uri, onProgress: (ScanProgress) -> Unit): ScanReport = withContext(Dispatchers.IO) {
+    suspend fun scanTree(root: Uri, options: ScanOptions, onProgress: (ScanProgress) -> Unit): ScanReport = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         runCatching { resolver.takePersistableUriPermission(root, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         val queue = ArrayDeque<TreeNode>()
@@ -57,20 +63,23 @@ class DocumentScanner(
                 val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val typeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
                 while (cursor.moveToNext()) {
                     coroutineContext.ensureActive()
                     val id = cursor.getString(idIndex)
                     val name = cursor.getString(nameIndex).orEmpty()
                     val mimeType = cursor.getString(typeIndex).orEmpty()
+                    val byteSize = if (cursor.isNull(sizeIndex)) 0L else cursor.getLong(sizeIndex)
                     val displayPath = listOf(node.relativePath, name).filter(String::isNotBlank).joinToString("/")
                     totals.examined += 1
                     when {
                         mimeType == DocumentsContract.Document.MIME_TYPE_DIR -> queue.add(TreeNode(id, displayPath))
-                        supportedFormat(name) != null -> {
+                        supportedFormat(name) in options.formats && byteSize >= options.minimumBytes -> {
                             totals.candidates += 1
                             importCandidate(
                                 uri = DocumentsContract.buildDocumentUriUsingTree(root, id),
                                 displayPath = displayPath,
+                                options = options,
                                 totals = totals,
                             )
                         }
@@ -82,7 +91,7 @@ class DocumentScanner(
         totals.report()
     }
 
-    suspend fun scanSharedStorage(onProgress: (ScanProgress) -> Unit): ScanReport = withContext(Dispatchers.IO) {
+    suspend fun scanSharedStorage(options: ScanOptions, onProgress: (ScanProgress) -> Unit): ScanReport = withContext(Dispatchers.IO) {
         check(hasAllFilesAccess) { "请先授权“所有文件访问”后再扫描设备。" }
         val queue = ArrayDeque<File>()
         queue.add(Environment.getExternalStorageDirectory())
@@ -99,9 +108,9 @@ class DocumentScanner(
                     return@forEach
                 }
                 totals.examined += 1
-                if (supportedFormat(child.name) != null && child.canRead()) {
+                if (supportedFormat(child.name) in options.formats && child.length() >= options.minimumBytes && child.canRead()) {
                     totals.candidates += 1
-                    importCandidate(Uri.fromFile(child), child.absolutePath, totals)
+                    importCandidate(Uri.fromFile(child), child.absolutePath, options, totals)
                 }
                 onProgress(totals.progress(child.absolutePath))
             }
@@ -109,8 +118,8 @@ class DocumentScanner(
         totals.report()
     }
 
-    private suspend fun importCandidate(uri: Uri, displayPath: String, totals: MutableTotals) {
-        when (importer.import(uri, sourcePath = displayPath)) {
+    private suspend fun importCandidate(uri: Uri, displayPath: String, options: ScanOptions, totals: MutableTotals) {
+        when (importer.import(uri, sourcePath = displayPath, initialTags = options.initialTags)) {
             is ImportOutcome.Imported -> totals.imported += 1
             is ImportOutcome.Duplicate -> totals.duplicates += 1
             is ImportOutcome.Rejected -> totals.rejected += 1
@@ -141,6 +150,7 @@ class DocumentScanner(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
         )
     }
 }

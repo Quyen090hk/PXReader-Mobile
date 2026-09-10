@@ -16,6 +16,7 @@ import io.github.quyen090hk.pxreader.importer.DocumentImporter
 import io.github.quyen090hk.pxreader.importer.DocumentScanner
 import io.github.quyen090hk.pxreader.importer.ImportOutcome
 import io.github.quyen090hk.pxreader.importer.ScanProgress
+import io.github.quyen090hk.pxreader.importer.ScanOptions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -70,15 +71,15 @@ class LibraryViewModel(
         repository.updateTags(documentId, input.split(',', '，').map(String::trim).filter(String::isNotEmpty).toSet())
     }
 
-    fun scanTree(uri: android.net.Uri) = launchScan { report -> scanner.scanTree(uri, report) }
+    fun scanTree(uri: android.net.Uri, options: ScanOptions) = launchScan { report -> scanner.scanTree(uri, options, report) }
 
-    fun scanSharedStorage(onPermissionRequired: () -> Unit) {
+    fun scanSharedStorage(options: ScanOptions, onPermissionRequired: () -> Unit) {
         if (!scanner.hasAllFilesAccess) {
             mutableState.update { it.copy(message = "扫描整个设备需要系统授予“所有文件访问”权限。") }
             onPermissionRequired()
             return
         }
-        launchScan { report -> scanner.scanSharedStorage(report) }
+        launchScan { report -> scanner.scanSharedStorage(options, report) }
     }
 
     private fun launchScan(work: suspend ((ScanProgress) -> Unit) -> io.github.quyen090hk.pxreader.importer.ScanReport) {
@@ -94,7 +95,7 @@ class LibraryViewModel(
                     it.copy(
                         scanning = false,
                         scanProgress = null,
-                        message = "扫描完成：发现 ${report.candidates} 本，新增 ${report.imported} 本，已存在 ${report.duplicates} 本。",
+                        message = "扫描完成：发现 ${report.candidates} 本，新增 ${report.imported} 本，已存在 ${report.duplicates} 本，跳过 ${report.rejected} 本。",
                     )
                 }
             }.onFailure { error ->
