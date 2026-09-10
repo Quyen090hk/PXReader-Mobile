@@ -97,7 +97,7 @@ private fun LibraryScreen(
     }
     var selectedTag by remember { mutableStateOf<String?>(null) }
     var editTagsFor by remember { mutableStateOf<DocumentEntity?>(null) }
-    val allTags = remember(state.documents) { state.documents.flatMap(DocumentEntity::tags).distinct().sorted() }
+    val allTags = remember(state.documents) { state.documents.flatMap { it.tags() }.distinct().sorted() }
     val visibleDocuments = state.documents.filter { selectedTag == null || it.tags().contains(selectedTag) }
 
     Scaffold(

@@ -28,8 +28,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlin { jvmToolchain(17) }
 }
+
+kotlin { jvmToolchain(17) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
@@ -61,4 +62,3 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
-

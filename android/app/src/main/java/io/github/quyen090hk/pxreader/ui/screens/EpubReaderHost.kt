@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
 import io.github.quyen090hk.pxreader.data.ReaderChapter
+import io.github.quyen090hk.pxreader.data.db.AnnotationEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -36,6 +37,7 @@ fun EpubReaderHost(
     storedFileName: String,
     chapter: ReaderChapter,
     locator: io.github.quyen090hk.pxreader.data.TextLocator,
+    annotations: List<AnnotationEntity>,
     fontScale: Float,
     lineHeight: Float,
     onRequestHtml: suspend (Int) -> String,
@@ -45,7 +47,11 @@ fun EpubReaderHost(
 ) {
     var html by remember(documentId, chapter.index) { mutableStateOf<String?>(null) }
     LaunchedEffect(documentId, chapter.index) {
-        html = runCatching { onRequestHtml(chapter.index) }.getOrNull()
+        html = try {
+            onRequestHtml(chapter.index)
+        } catch (_: Exception) {
+            null
+        }
     }
     if (html == null) {
         androidx.compose.foundation.layout.Box(modifier, contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -55,12 +61,14 @@ fun EpubReaderHost(
     }
     val context = LocalContext.current
     val source = remember(documentId, storedFileName) { File(context.filesDir, "documents/$storedFileName") }
-    key("$documentId:${chapter.index}") {
+    val chapterAnnotations = annotations.filter { it.chapterIndex == chapter.index }
+    key("$documentId:${chapter.index}:${chapterAnnotations.joinToString { it.id + it.updatedAt }}") {
         EpubWebView(
             source = source,
             documentId = documentId,
             chapter = chapter,
             restoreFraction = if (chapter.text.isEmpty()) 0f else locator.charStart.toFloat() / chapter.text.length,
+            annotations = chapterAnnotations,
             html = requireNotNull(html),
             fontScale = fontScale,
             lineHeight = lineHeight,
@@ -78,6 +86,7 @@ private fun EpubWebView(
     documentId: String,
     chapter: ReaderChapter,
     restoreFraction: Float,
+    annotations: List<AnnotationEntity>,
     html: String,
     fontScale: Float,
     lineHeight: Float,
@@ -112,6 +121,7 @@ private fun EpubWebView(
 
                     override fun onPageFinished(view: WebView, url: String) {
                         view.evaluateJavascript(BRIDGE_SCRIPT, null)
+                        view.evaluateJavascript(highlightScript(annotations), null)
                         val fraction = (view.getTag(android.R.id.content) as? Float ?: 0f).coerceIn(0f, 1f)
                         view.evaluateJavascript("window.scrollTo(0, document.documentElement.scrollHeight * $fraction);", null)
                     }
@@ -180,6 +190,19 @@ private class EpubZipPathHandler(
 private fun themeScript(fontScale: Float, lineHeight: Float) =
     "document.documentElement.style.setProperty('--px-font-size','${fontScale}rem');document.documentElement.style.setProperty('--px-line-height','${lineHeight}');"
 
+private fun highlightScript(annotations: List<AnnotationEntity>): String {
+    val payload = org.json.JSONArray().apply {
+        annotations.forEach { annotation ->
+            put(JSONObject().apply {
+                put("id", annotation.id)
+                put("quote", annotation.quote)
+                put("color", annotation.color)
+            })
+        }
+    }
+    return "window.PXReaderHighlights && window.PXReaderHighlights.apply(${JSONObject.quote(payload.toString())});"
+}
+
 private const val BRIDGE_SCRIPT = """
 (() => {
   if (window.__pxReaderBridgeInstalled) return;
@@ -205,6 +228,40 @@ private const val BRIDGE_SCRIPT = """
     window.PXReaderBridge.selection(JSON.stringify({start, end, quote, prefix:text.slice(Math.max(0,start-48),start), suffix:text.slice(end,end+48)}));
   };
   document.addEventListener('selectionchange', reportSelection);
+  window.PXReaderHighlights = {
+    apply: (raw) => {
+      let annotations = [];
+      try { annotations = JSON.parse(raw); } catch (_) { return; }
+      const mark = (needle, color, id) => {
+        if (!needle) return false;
+        const lowerNeedle = needle.toLocaleLowerCase();
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+          acceptNode: (node) => node.parentElement && node.parentElement.tagName !== 'MARK' && node.nodeValue.toLocaleLowerCase().includes(lowerNeedle) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+        });
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        for (const node of nodes) {
+          const value = node.nodeValue, lower = value.toLocaleLowerCase(), at = lower.indexOf(lowerNeedle);
+          if (at < 0) continue;
+          const fragment = document.createDocumentFragment();
+          fragment.append(value.slice(0, at));
+          const span = document.createElement('mark');
+          span.dataset.pxAnnotationId = id;
+          span.style.background = color === 'green' ? '#caeece' : color === 'blue' ? '#bbdefb' : color === 'pink' ? '#f8bbd0' : color === 'orange' ? '#ffe0b2' : '#fff59d';
+          span.textContent = value.slice(at, at + needle.length);
+          fragment.append(span, value.slice(at + needle.length));
+          node.parentNode.replaceChild(fragment, node);
+          return true;
+        }
+        return false;
+      };
+      annotations.forEach((annotation) => {
+        if (mark(annotation.quote, annotation.color, annotation.id)) return;
+        const fallback = (annotation.quote.match(/[\p{L}\p{N}]{2,}/u) || [])[0] || annotation.quote.slice(0, 16);
+        mark(fallback, annotation.color, annotation.id);
+      });
+    }
+  };
   let pending = false;
   window.addEventListener('scroll', () => {
     if (pending) return;

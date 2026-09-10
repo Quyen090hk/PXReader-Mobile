@@ -158,6 +158,7 @@ private fun ReaderScreen(
                                 storedFileName = reader.document.storedFileName,
                                 chapter = chapter,
                                 locator = state.locator,
+                                annotations = state.annotations,
                                 fontScale = settings.fontScale,
                                 lineHeight = settings.lineHeight,
                                 onRequestHtml = model::epubHtml,
