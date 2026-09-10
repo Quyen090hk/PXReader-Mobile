@@ -269,6 +269,10 @@ class EpubBook(private val file: File) {
     private fun sanitizeHtml(source: String): String {
         val document = Jsoup.parse(source)
         document.select("script, iframe, object, embed, base").remove()
+        document.select("meta[name=viewport]").remove()
+        document.head().prependElement("meta")
+            .attr("name", "viewport")
+            .attr("content", "width=device-width, initial-scale=1.0, maximum-scale=1.0")
         document.getAllElements().forEach { element ->
             element.attributes().asList().forEach { attribute ->
                 val key = attribute.key.lowercase()

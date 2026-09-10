@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.webkit.JavascriptInterface
 import android.webkit.MimeTypeMap
 import android.webkit.WebResourceRequest
@@ -36,6 +38,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.util.zip.ZipFile
+import kotlin.math.abs
 
 /**
  * EPUB and TXT share this host instead of having separate, incompatible layout rules. The Web
@@ -229,6 +232,7 @@ private fun ReaderWebView(
             }
         },
         update = { view ->
+            view.pagedMode = settings.readingMode.name == "PAGED"
             view.restoreCharOffset = locator.charStart.coerceAtLeast(0)
             view.restoreAnchor = locator.anchor
             view.themeScript = themeScript(settings, foreground, background)
@@ -270,6 +274,15 @@ private fun ReaderWebView(
 
 /** Keeps WebView-local state without Android View tags, which require app resource IDs. */
 private class PxReaderWebView(context: Context) : WebView(context) {
+    private val swipeSlop = ViewConfiguration.get(context).scaledTouchSlop * 2
+    private var downX = 0f
+    private var downY = 0f
+    private var downAt = 0L
+    private var swipeTriggered = false
+    private var swipeDelta = 0
+    private var swipeDispatched = false
+
+    var pagedMode: Boolean = false
     var loadedContentKey: String? = null
     var restoreCharOffset: Int = 0
     var restoreAnchor: String? = null
@@ -277,6 +290,85 @@ private class PxReaderWebView(context: Context) : WebView(context) {
     var themeScript: String = ""
     var appliedThemeScript: String? = null
     var highlightScript: String = ""
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!pagedMode) return super.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                downX = event.x
+                downY = event.y
+                downAt = event.eventTime
+                swipeTriggered = false
+                swipeDelta = 0
+                swipeDispatched = false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!swipeTriggered) {
+                    val dx = event.x - downX
+                    val dy = event.y - downY
+                    if (
+                        event.eventTime - downAt <= 550L &&
+                        abs(dx) > swipeSlop &&
+                        abs(dx) > abs(dy) * 1.15f
+                    ) {
+                        swipeTriggered = true
+                        swipeDelta = if (dx < 0f) 1 else -1
+                        MotionEvent.obtain(event).also { cancelled ->
+                            cancelled.action = MotionEvent.ACTION_CANCEL
+                            super.onTouchEvent(cancelled)
+                            cancelled.recycle()
+                        }
+                        dispatchSwipe()
+                    }
+                }
+                if (swipeTriggered) {
+                    // WebView has its own native scroll offset in addition to window.scrollX.
+                    // Keep it at zero so a drag can never leave two CSS columns half-visible.
+                    scrollTo(0, 0)
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                if (swipeTriggered) {
+                    dispatchSwipe()
+                    return true
+                } else {
+                    val dx = event.x - downX
+                    val dy = event.y - downY
+                    if (
+                        event.eventTime - downAt <= 700L &&
+                        abs(dx) >= width * 0.14f &&
+                        abs(dx) > abs(dy) * 1.15f
+                    ) {
+                        swipeTriggered = true
+                        swipeDelta = if (dx < 0f) 1 else -1
+                        dispatchSwipe()
+                        return true
+                    }
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                if (swipeTriggered) {
+                    dispatchSwipe()
+                    return true
+                }
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    private fun dispatchSwipe() {
+        if (swipeDispatched || swipeDelta == 0) return
+        swipeDispatched = true
+        scrollTo(0, 0)
+        evaluateJavascript(
+            "window.getSelection && window.getSelection().removeAllRanges(); window.PXReaderLayout && window.PXReaderLayout.page($swipeDelta);",
+            null,
+        )
+    }
 }
 
 private class ReaderBridge(
@@ -420,9 +512,9 @@ private const val BRIDGE_SCRIPT = """
   window.__pxReaderBridgeInstalled = true;
   const body = () => document.body;
   const visualViewport = () => window.visualViewport || {width: window.innerWidth, height: window.innerHeight};
-  // WebView reports scroll coordinates in device pixels while CSS columns use visual-viewport
-  // pixels. Converting here keeps a page turn aligned with exactly one rendered column.
-  const pageWidth = () => Math.max(1, Math.round(visualViewport().width * (window.devicePixelRatio || 1)));
+  // window.scrollX and CSS multi-columns both use CSS pixels. devicePixelRatio must not be
+  // applied here: doing so skips multiple columns on high-density phone screens.
+  const pageWidth = () => Math.max(1, Math.round(visualViewport().width));
   const walker = () => document.createTreeWalker(body(), NodeFilter.SHOW_TEXT);
   const textOffset = (node, point) => {
     let total = 0, current, tree = walker();
@@ -511,6 +603,19 @@ private const val BRIDGE_SCRIPT = """
       window.scrollBy({left:-window.scrollX, top:target - window.scrollY, behavior:'instant'});
     }
   };
+  let pageMotion = false;
+  const pageMetrics = () => {
+    const width = pageWidth();
+    const scrollWidth = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);
+    return {width, max:Math.max(0, scrollWidth - width), count:Math.max(1, Math.ceil(scrollWidth / width))};
+  };
+  const scrollToPage = (index, behavior = 'smooth') => {
+    const metrics = pageMetrics();
+    const page = Math.max(0, Math.min(metrics.count - 1, index));
+    pageMotion = true;
+    window.scrollTo({left:Math.min(metrics.max, page * metrics.width), top:0, behavior});
+    setTimeout(() => { pageMotion = false; report(); }, behavior === 'smooth' ? 280 : 0);
+  };
   window.PXReaderLayout = {
     current: () => { const point = caretAt(); return point ? {start:textOffset(point.node, point.point), anchor:nodeAnchor(point.node, point.point)} : {start:0, anchor:''}; },
     restore: (start, anchor) => requestAnimationFrame(() => { const range = rangeFor(Number(start) || 0, anchor); if (range) scrollToPoint({node:range.startContainer, point:range.startOffset}); setTimeout(report, 80); }),
@@ -518,11 +623,7 @@ private const val BRIDGE_SCRIPT = """
     page: (delta) => {
       if (!document.documentElement.classList.contains('px-paged')) return;
       const width = pageWidth();
-      const scrollWidth = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);
-      const max = Math.max(0, scrollWidth - width);
-      const target = Math.max(0, Math.min(max, Math.round(window.scrollX / width + delta) * width));
-      window.scrollTo({left:target, top:0, behavior:'smooth'});
-      setTimeout(report, 260);
+      scrollToPage(Math.round(window.scrollX / width) + Math.sign(delta));
     },
   };
   const annotationColor = (color) => color === 'green' ? '#caeece' : color === 'blue' ? '#bbdefb' : color === 'pink' ? '#f8bbd0' : color === 'orange' ? '#ffe0b2' : '#fff59d';
@@ -566,11 +667,6 @@ private const val BRIDGE_SCRIPT = """
     }, 120);
   };
   document.addEventListener('selectionchange', reportSelection);
-  document.addEventListener('touchmove', (event) => {
-    if (!document.documentElement.classList.contains('px-paged')) return;
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) event.preventDefault();
-  }, {passive:false});
   document.addEventListener('click', (event) => {
     const link = event.target.closest && event.target.closest('a[href^="#"]');
     if (link) {
@@ -586,6 +682,7 @@ private const val BRIDGE_SCRIPT = """
   });
   let pending = false;
   window.addEventListener('scroll', () => {
+    if (pageMotion) return;
     if (pending) return; pending = true;
     requestAnimationFrame(() => { pending = false; report(); });
   }, {passive:true});
