@@ -149,6 +149,12 @@ interface PxReaderDao {
     @Query("SELECT * FROM bookmarks")
     suspend fun allBookmarks(): List<BookmarkEntity>
 
+    @Query("SELECT * FROM bookmarks WHERE documentId = :documentId ORDER BY updatedAt DESC")
+    fun observeBookmarks(documentId: String): Flow<List<BookmarkEntity>>
+
+    @Query("DELETE FROM bookmarks WHERE id = :id")
+    suspend fun deleteBookmark(id: String)
+
     @Insert
     suspend fun insertSearchUnit(unit: SearchUnitEntity): Long
 

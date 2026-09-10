@@ -10,6 +10,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Search
@@ -46,6 +48,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,12 +62,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.quyen090hk.pxreader.data.AnnotationColor
 import io.github.quyen090hk.pxreader.data.DocumentFormat
 import io.github.quyen090hk.pxreader.data.ReaderChapter
 import io.github.quyen090hk.pxreader.data.ReaderRepository
 import io.github.quyen090hk.pxreader.data.TextLocator
 import io.github.quyen090hk.pxreader.data.db.AnnotationEntity
+import io.github.quyen090hk.pxreader.data.db.BookmarkEntity
 import io.github.quyen090hk.pxreader.settings.ReaderSettings
 import io.github.quyen090hk.pxreader.ui.PxReaderViewModelFactory
 import io.github.quyen090hk.pxreader.ui.ReaderViewModel
@@ -85,6 +92,17 @@ fun ReaderRoute(
         factory = remember(documentId) { PxReaderViewModelFactory { ReaderViewModel(documentId, repository) } },
     )
     val state by model.state.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(model, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) model.persistCurrentPosition()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            model.persistCurrentPosition()
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
     LaunchedEffect(state.reader, initialLocator) {
         if (state.reader != null && initialLocator != null) model.navigateTo(initialLocator)
     }
@@ -106,15 +124,41 @@ private fun ReaderScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var searchOpen by remember { mutableStateOf(false) }
     var annotationOpen by remember { mutableStateOf(false) }
+    val bookmarkAtCurrentLocation = state.locator?.let { locator ->
+        state.bookmarks.any { it.chapterIndex == locator.chapterIndex && it.charStart == locator.charStart }
+    } == true
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
                 Column(Modifier.fillMaxSize().padding(top = 24.dp)) {
-                    Text("目录", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(horizontal = 24.dp))
-                    Text("跳转到任意章节", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp))
+                    Text("阅读导航", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(horizontal = 24.dp))
+                    Text("书签和目录都在这里", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp))
                     LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
-                        items(reader?.chapters.orEmpty()) { chapter ->
+                        if (state.bookmarks.isNotEmpty()) {
+                            item {
+                                Text("书签", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp))
+                            }
+                            items(state.bookmarks, key = BookmarkEntity::id) { bookmark ->
+                                TextButton(
+                                    onClick = {
+                                        model.navigateTo(bookmark.toLocator())
+                                        scope.launch { drawerState.close() }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                                ) {
+                                    Column(Modifier.fillMaxWidth()) {
+                                        Text(bookmark.label ?: "第 ${bookmark.chapterIndex + 1} 章", maxLines = 1)
+                                        Text("${(bookmark.progress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                            item { HorizontalDivider(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) }
+                        }
+                        item {
+                            Text("目录", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp))
+                        }
+                        items(reader?.chapters.orEmpty(), key = ReaderChapter::index) { chapter ->
                             TextButton(
                                 onClick = {
                                     model.navigateTo(TextLocator.atChapterStart(chapter.index, chapter.href))
@@ -136,10 +180,16 @@ private fun ReaderScreen(
                 CenterAlignedTopAppBar(
                     title = { Text(reader?.document?.title ?: "PXReader", maxLines = 1) },
                     navigationIcon = {
-                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回书架") }
+                        IconButton(onClick = { model.persistCurrentPosition(); onBack() }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回书架") }
                     },
                     actions = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Outlined.Menu, contentDescription = "目录") }
+                        IconButton(onClick = model::toggleBookmark) {
+                            Icon(
+                                if (bookmarkAtCurrentLocation) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkAdd,
+                                contentDescription = if (bookmarkAtCurrentLocation) "移除书签" else "添加书签",
+                            )
+                        }
                         IconButton(onClick = { searchOpen = true }) { Icon(Icons.Outlined.Search, contentDescription = "搜索全文") }
                         IconButton(onClick = { reader?.let { onAnnotations(it.document.id) } }) { Icon(Icons.Outlined.MoreVert, contentDescription = "批注") }
                         IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, contentDescription = "阅读设置") }
@@ -227,6 +277,10 @@ private fun ReaderScreen(
                                     progress = { state.locator.progress.coerceIn(0f, 1f) },
                                     modifier = Modifier.fillMaxWidth(),
                                 )
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    TextButton(onClick = model::previousChapter, enabled = chapter.index > 0) { Text("上一章") }
+                                    TextButton(onClick = model::nextChapter, enabled = chapter.index < reader.chapters.lastIndex) { Text("下一章") }
+                                }
                             }
                         }
                     }
@@ -377,3 +431,15 @@ private fun AnnotationEntity.colorArgb(): Int = when (color.lowercase()) {
 private fun AnnotationColor.label() = when (this) {
     AnnotationColor.YELLOW -> "黄"; AnnotationColor.GREEN -> "绿"; AnnotationColor.BLUE -> "蓝"; AnnotationColor.PINK -> "粉"; AnnotationColor.ORANGE -> "橙"
 }
+
+private fun BookmarkEntity.toLocator() = TextLocator(
+    chapterIndex = chapterIndex,
+    chapterHref = chapterHref,
+    charStart = charStart,
+    charEnd = charEnd,
+    progress = progress,
+    quote = quote,
+    prefix = prefix,
+    suffix = suffix,
+    anchor = anchor,
+)

@@ -125,8 +125,10 @@ private fun EpubWebView(
 
                     override fun onPageFinished(view: WebView, url: String) {
                         view.evaluateJavascript(BRIDGE_SCRIPT, null)
-                        view.evaluateJavascript(highlightScript(annotations), null)
-                        val fraction = (view as? PxEpubWebView)?.restoreFraction?.coerceIn(0f, 1f) ?: 0f
+                        val readerView = view as? PxEpubWebView
+                        readerView?.themeScript?.let { view.evaluateJavascript(it, null) }
+                        readerView?.highlightScript?.let { view.evaluateJavascript(it, null) }
+                        val fraction = readerView?.restoreFraction?.coerceIn(0f, 1f) ?: 0f
                         view.evaluateJavascript("window.scrollTo(0, document.documentElement.scrollHeight * $fraction);", null)
                     }
                 }
@@ -134,6 +136,13 @@ private fun EpubWebView(
         },
         update = { view ->
             view.restoreFraction = restoreFraction
+            view.themeScript = themeScript(
+                fontScale = fontScale,
+                lineHeight = lineHeight,
+                foreground = foreground,
+                background = background,
+            )
+            view.highlightScript = highlightScript(annotations)
             val contentKey = "$documentId:${chapter.index}"
             if (view.loadedContentKey != contentKey) {
                 view.loadedContentKey = contentKey
@@ -141,14 +150,10 @@ private fun EpubWebView(
                 view.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
             } else {
                 view.evaluateJavascript(
-                    themeScript(
-                        fontScale = fontScale,
-                        lineHeight = lineHeight,
-                        foreground = foreground,
-                        background = background,
-                    ),
+                    view.themeScript,
                     null,
                 )
+                view.evaluateJavascript(view.highlightScript, null)
             }
         },
         modifier = modifier,
@@ -162,6 +167,8 @@ private fun EpubWebView(
 private class PxEpubWebView(context: Context) : WebView(context) {
     var loadedContentKey: String? = null
     var restoreFraction: Float = 0f
+    var themeScript: String = ""
+    var highlightScript: String = ""
 }
 
 private class EpubBridge(

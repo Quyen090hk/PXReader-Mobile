@@ -2,6 +2,7 @@ package io.github.quyen090hk.pxreader.data
 
 import android.content.Context
 import io.github.quyen090hk.pxreader.data.db.AnnotationEntity
+import io.github.quyen090hk.pxreader.data.db.BookmarkEntity
 import io.github.quyen090hk.pxreader.data.db.DocumentEntity
 import io.github.quyen090hk.pxreader.data.db.PxReaderDao
 import io.github.quyen090hk.pxreader.data.db.ReadingPositionEntity
@@ -26,6 +27,8 @@ class ReaderRepository(context: Context, private val dao: PxReaderDao) {
     val documents: Flow<List<DocumentEntity>> = dao.observeDocuments()
 
     fun annotations(documentId: String): Flow<List<AnnotationEntity>> = dao.observeAnnotations(documentId)
+
+    fun bookmarks(documentId: String): Flow<List<BookmarkEntity>> = dao.observeBookmarks(documentId)
 
     suspend fun document(documentId: String): DocumentEntity? = dao.document(documentId)
 
@@ -71,6 +74,30 @@ class ReaderRepository(context: Context, private val dao: PxReaderDao) {
     }
 
     suspend fun deleteAnnotation(id: String) = dao.deleteAnnotation(id)
+
+    suspend fun addBookmark(documentId: String, locator: TextLocator, label: String?) {
+        val now = System.currentTimeMillis()
+        dao.upsertBookmark(
+            BookmarkEntity(
+                id = newStableId(),
+                documentId = documentId,
+                label = label?.trim()?.takeIf { it.isNotEmpty() },
+                chapterIndex = locator.chapterIndex,
+                chapterHref = locator.chapterHref,
+                charStart = locator.charStart,
+                charEnd = locator.charEnd,
+                progress = locator.progress,
+                quote = locator.quote,
+                prefix = locator.prefix,
+                suffix = locator.suffix,
+                anchor = locator.anchor,
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+    }
+
+    suspend fun deleteBookmark(id: String) = dao.deleteBookmark(id)
 
     suspend fun updateTags(documentId: String, tags: Set<String>) {
         val normalized = tags.map(String::trim).filter(String::isNotEmpty).distinct().sorted()
@@ -149,4 +176,3 @@ private fun ReadingPositionEntity.toLocator() = TextLocator(
 private fun TextLocator.toEntity(documentId: String, now: Long) = ReadingPositionEntity(
     documentId, chapterIndex, chapterHref, charStart, charEnd, progress, quote, prefix, suffix, anchor, now,
 )
-

@@ -11,6 +11,7 @@ import io.github.quyen090hk.pxreader.data.ReaderRepository
 import io.github.quyen090hk.pxreader.data.SearchHit
 import io.github.quyen090hk.pxreader.data.TextLocator
 import io.github.quyen090hk.pxreader.data.db.AnnotationEntity
+import io.github.quyen090hk.pxreader.data.db.BookmarkEntity
 import io.github.quyen090hk.pxreader.data.db.DocumentEntity
 import io.github.quyen090hk.pxreader.importer.DocumentImporter
 import io.github.quyen090hk.pxreader.importer.DocumentScanner
@@ -23,6 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 data class LibraryUiState(
@@ -114,6 +117,7 @@ data class ReaderUiState(
     val locator: TextLocator? = null,
     val locationRevision: Long = 0,
     val annotations: List<AnnotationEntity> = emptyList(),
+    val bookmarks: List<BookmarkEntity> = emptyList(),
     val pendingSelection: TextLocator? = null,
     val searchHits: List<SearchHit> = emptyList(),
     val searching: Boolean = false,
@@ -125,11 +129,17 @@ class ReaderViewModel(
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(ReaderUiState())
     val state: StateFlow<ReaderUiState> = mutableState.asStateFlow()
+    private var positionSaveJob: Job? = null
 
     init {
         viewModelScope.launch {
             repository.annotations(documentId).collectLatest { annotations ->
                 mutableState.update { it.copy(annotations = annotations) }
+            }
+        }
+        viewModelScope.launch {
+            repository.bookmarks(documentId).collectLatest { bookmarks ->
+                mutableState.update { it.copy(bookmarks = bookmarks) }
             }
         }
         viewModelScope.launch {
@@ -150,7 +160,7 @@ class ReaderViewModel(
         val reader = state.value.reader ?: return
         val normalized = normalize(locator, reader)
         mutableState.update { it.copy(locator = normalized, pendingSelection = null, locationRevision = it.locationRevision + 1) }
-        viewModelScope.launch { repository.savePosition(documentId, normalized) }
+        persistPosition(normalized)
     }
 
     fun updateProgress(fractionInChapter: Float) {
@@ -159,8 +169,46 @@ class ReaderViewModel(
         val chapter = reader.chapters.getOrNull(current.chapterIndex) ?: return
         val char = (chapter.text.length * fractionInChapter.coerceIn(0f, 1f)).roundToInt()
         val updated = locatorFor(chapter, char, char, reader)
+        if (updated.charStart == current.charStart && updated.chapterIndex == current.chapterIndex) return
         mutableState.update { it.copy(locator = updated) }
-        viewModelScope.launch { repository.savePosition(documentId, updated) }
+        persistPosition(updated, debounce = true)
+    }
+
+    fun previousChapter() {
+        val reader = state.value.reader ?: return
+        val currentIndex = state.value.locator?.chapterIndex ?: return
+        if (currentIndex <= 0) return
+        reader.chapters.getOrNull(currentIndex - 1)?.let { chapter ->
+            navigateTo(TextLocator.atChapterStart(chapter.index, chapter.href))
+        }
+    }
+
+    fun nextChapter() {
+        val reader = state.value.reader ?: return
+        val currentIndex = state.value.locator?.chapterIndex ?: return
+        reader.chapters.getOrNull(currentIndex + 1)?.let { chapter ->
+            navigateTo(TextLocator.atChapterStart(chapter.index, chapter.href))
+        }
+    }
+
+    fun toggleBookmark() {
+        val reader = state.value.reader ?: return
+        val locator = state.value.locator ?: return
+        val existing = state.value.bookmarks.firstOrNull {
+            it.chapterIndex == locator.chapterIndex && it.charStart == locator.charStart
+        }
+        viewModelScope.launch {
+            if (existing == null) {
+                val chapterTitle = reader.chapters.getOrNull(locator.chapterIndex)?.title
+                repository.addBookmark(documentId, locator, chapterTitle)
+            } else {
+                repository.deleteBookmark(existing.id)
+            }
+        }
+    }
+
+    fun persistCurrentPosition() {
+        state.value.locator?.let(::persistPosition)
     }
 
     fun selectText(start: Int, end: Int) {
@@ -198,6 +246,14 @@ class ReaderViewModel(
     }
 
     suspend fun epubHtml(chapterIndex: Int): String = repository.epubHtml(documentId, chapterIndex)
+
+    private fun persistPosition(locator: TextLocator, debounce: Boolean = false) {
+        positionSaveJob?.cancel()
+        positionSaveJob = viewModelScope.launch {
+            if (debounce) delay(350)
+            repository.savePosition(documentId, locator)
+        }
+    }
 
     private fun normalize(raw: TextLocator, reader: ReaderDocument): TextLocator {
         val chapter = reader.chapters.getOrElse(raw.chapterIndex.coerceIn(0, reader.chapters.lastIndex)) { ReaderChapter(0, "正文", null, "") }
