@@ -162,7 +162,7 @@ private fun LibraryScreen(
                 title = {
                     Column {
                         Text("PXReader", style = MaterialTheme.typography.titleLarge)
-                        Text("YOUR LOCAL LIBRARY", style = MaterialTheme.typography.labelSmall, letterSpacing = 0.12.em)
+                        Text("你的本地书架", style = MaterialTheme.typography.labelSmall, letterSpacing = 0.08.em)
                     }
                 },
                 actions = {
@@ -181,11 +181,10 @@ private fun LibraryScreen(
             contentPadding = PaddingValues(start = 20.dp, top = padding.calculateTopPadding() + 8.dp, end = 20.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            item {
-                LibraryHero(
-                    documentCount = state.documents.size,
-                    onImport = { importSheetVisible = true },
-                )
+            if (state.documents.isEmpty()) {
+                item {
+                    LibraryHero(onImport = { importSheetVisible = true })
+                }
             }
             state.message?.let { message ->
                 item { AssistChip(onClick = model::consumeMessage, label = { Text(message) }) }
@@ -232,9 +231,17 @@ private fun LibraryScreen(
             }
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("你的文档", style = MaterialTheme.typography.headlineSmall)
+                    Text("书架", style = MaterialTheme.typography.headlineSmall)
                     Spacer(Modifier.weight(1f))
                     Text("${visibleDocuments.size} 本", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (state.documents.isNotEmpty()) {
+                        Spacer(Modifier.width(12.dp))
+                        FilledTonalButton(onClick = { importSheetVisible = true }, shape = MaterialTheme.shapes.small) {
+                            Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("导入")
+                        }
+                    }
                 }
             }
             if (visibleDocuments.isEmpty()) {
@@ -289,7 +296,7 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun LibraryHero(documentCount: Int, onImport: () -> Unit) {
+private fun LibraryHero(onImport: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
@@ -299,9 +306,9 @@ private fun LibraryHero(documentCount: Int, onImport: () -> Unit) {
             .padding(22.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("从设备发现你的书。", style = MaterialTheme.typography.displaySmall, color = colors.onPrimaryContainer)
+        Text("从第一本书开始。", style = MaterialTheme.typography.displaySmall, color = colors.onPrimaryContainer)
         Text(
-            if (documentCount == 0) "从设备发现 TXT 与 EPUB，或直接选择文件，离线书架会自动整理。" else "你有 $documentCount 本本地文档；导入可继续发现设备中新加入的书。",
+            "从设备发现 TXT 与 EPUB，或直接选择文件；PXReader 会把它们整理进你的离线书架。",
             style = MaterialTheme.typography.bodyMedium,
             color = colors.onPrimaryContainer.copy(alpha = 0.82f),
         )
@@ -509,7 +516,7 @@ private fun EmptyLibrary(onImport: () -> Unit) {
             ) {
                 Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
-            Text("还没有发现书籍", style = MaterialTheme.typography.titleLarge)
+            Text("书架还是空的", style = MaterialTheme.typography.titleLarge)
             Text("导入时可扫描设备或指定目录，也可以直接选择 TXT 与 EPUB 文件。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             FilledTonalButton(onClick = onImport) { Text("导入书籍") }
         }

@@ -105,7 +105,7 @@ private fun EpubWebView(
             val loader = WebViewAssetLoader.Builder()
                 .addPathHandler("/epub/", EpubZipPathHandler(documentId, source))
                 .build()
-            WebView(context).apply {
+            PxEpubWebView(context).apply {
                 settings.apply {
                     javaScriptEnabled = true // only app-injected selection/scroll bridge; EPUB scripts are stripped.
                     domStorageEnabled = false
@@ -126,17 +126,17 @@ private fun EpubWebView(
                     override fun onPageFinished(view: WebView, url: String) {
                         view.evaluateJavascript(BRIDGE_SCRIPT, null)
                         view.evaluateJavascript(highlightScript(annotations), null)
-                        val fraction = (view.getTag(android.R.id.content) as? Float ?: 0f).coerceIn(0f, 1f)
+                        val fraction = (view as? PxEpubWebView)?.restoreFraction?.coerceIn(0f, 1f) ?: 0f
                         view.evaluateJavascript("window.scrollTo(0, document.documentElement.scrollHeight * $fraction);", null)
                     }
                 }
             }
         },
         update = { view ->
-            view.setTag(android.R.id.content, restoreFraction)
+            view.restoreFraction = restoreFraction
             val contentKey = "$documentId:${chapter.index}"
-            if (view.tag != contentKey) {
-                view.tag = contentKey
+            if (view.loadedContentKey != contentKey) {
+                view.loadedContentKey = contentKey
                 val baseUrl = "https://appassets.androidplatform.net/epub/$documentId/${chapter.href.orEmpty()}"
                 view.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
             } else {
@@ -153,6 +153,15 @@ private fun EpubWebView(
         },
         modifier = modifier,
     )
+}
+
+/**
+ * Keeps WebView-local state without using keyed View tags. Android requires keys passed to
+ * View.setTag(key, value) to be app resource IDs, so framework IDs crash on current devices.
+ */
+private class PxEpubWebView(context: Context) : WebView(context) {
+    var loadedContentKey: String? = null
+    var restoreFraction: Float = 0f
 }
 
 private class EpubBridge(
