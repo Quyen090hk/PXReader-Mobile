@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -45,6 +46,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -146,6 +148,7 @@ private fun LibraryScreen(
             legacyPermission.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
         }
     }
+    var importSheetVisible by remember { mutableStateOf(false) }
     var scanDialogVisible by remember { mutableStateOf(false) }
     var selectedTag by remember { mutableStateOf<String?>(null) }
     var editTagsFor by remember { mutableStateOf<DocumentEntity?>(null) }
@@ -181,8 +184,7 @@ private fun LibraryScreen(
             item {
                 LibraryHero(
                     documentCount = state.documents.size,
-                    onScan = { scanDialogVisible = true },
-                    onImport = { picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
+                    onImport = { importSheetVisible = true },
                 )
             }
             state.message?.let { message ->
@@ -238,8 +240,7 @@ private fun LibraryScreen(
             if (visibleDocuments.isEmpty()) {
                 item {
                     EmptyLibrary(
-                        onScan = { scanDialogVisible = true },
-                        onImport = { picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
+                        onImport = { importSheetVisible = true },
                     )
                 }
             } else {
@@ -256,9 +257,25 @@ private fun LibraryScreen(
             onSave = { tags -> model.updateTags(document.id, tags); editTagsFor = null },
         )
     }
+    if (importSheetVisible) {
+        ImportSheet(
+            onDismiss = { importSheetVisible = false },
+            onScan = {
+                importSheetVisible = false
+                scanDialogVisible = true
+            },
+            onSelectFiles = {
+                importSheetVisible = false
+                picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream"))
+            },
+        )
+    }
     if (scanDialogVisible) {
         ScanImportDialog(
-            onDismiss = { scanDialogVisible = false },
+            onDismiss = {
+                scanDialogVisible = false
+                importSheetVisible = true
+            },
             onConfirm = { scope, options ->
                 pendingScanOptions = options
                 scanDialogVisible = false
@@ -272,7 +289,7 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun LibraryHero(documentCount: Int, onScan: () -> Unit, onImport: () -> Unit) {
+private fun LibraryHero(documentCount: Int, onImport: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
@@ -284,22 +301,92 @@ private fun LibraryHero(documentCount: Int, onScan: () -> Unit, onImport: () -> 
     ) {
         Text("从设备发现你的书。", style = MaterialTheme.typography.displaySmall, color = colors.onPrimaryContainer)
         Text(
-            if (documentCount == 0) "扫描书籍目录或整个设备，把 TXT 与 EPUB 自动整理进离线书架。" else "你有 $documentCount 本本地文档；扫描可持续发现设备中新加入的书。",
+            if (documentCount == 0) "从设备发现 TXT 与 EPUB，或直接选择文件，离线书架会自动整理。" else "你有 $documentCount 本本地文档；导入可继续发现设备中新加入的书。",
             style = MaterialTheme.typography.bodyMedium,
             color = colors.onPrimaryContainer.copy(alpha = 0.82f),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilledTonalButton(onClick = onScan, shape = MaterialTheme.shapes.small) {
+        FilledTonalButton(onClick = onImport, shape = MaterialTheme.shapes.small) {
                 Icon(Icons.Outlined.FolderOpen, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("扫描书籍")
-            }
-            TextButton(onClick = onImport) { Text("手动选择文件") }
+                Text("导入")
         }
     }
 }
 
 private enum class ScanScope { DEVICE, FOLDER }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ImportSheet(
+    onDismiss: () -> Unit,
+    onScan: () -> Unit,
+    onSelectFiles: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 36.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("导入书籍", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "优先扫描设备中的书籍；需要时也可以直接选择一个或多个文件。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            ImportMethodCard(
+                title = "扫描发现",
+                description = "扫描整个设备或指定目录，自动识别、去重并整理 TXT 与 EPUB。",
+                action = "配置扫描",
+                icon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
+                accent = MaterialTheme.colorScheme.primaryContainer,
+                onClick = onScan,
+            )
+            ImportMethodCard(
+                title = "选择文件",
+                description = "从系统文件选择器导入一个或多个 TXT、EPUB 文件。",
+                action = "选择文件",
+                icon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
+                accent = MaterialTheme.colorScheme.secondaryContainer,
+                onClick = onSelectFiles,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImportMethodCard(
+    title: String,
+    description: String,
+    action: String,
+    icon: @Composable () -> Unit,
+    accent: androidx.compose.ui.graphics.Color,
+    onClick: () -> Unit,
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier.size(44.dp).clip(MaterialTheme.shapes.medium).background(accent),
+                contentAlignment = Alignment.Center,
+            ) {
+                icon()
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(action, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
 
 @Composable
 private fun ScanImportDialog(
@@ -328,7 +415,7 @@ private fun ScanImportDialog(
     )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("扫描导入") },
+        title = { Text("配置扫描") },
         text = {
             Column(
                 modifier = Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
@@ -400,12 +487,12 @@ private fun ScanImportDialog(
                 Text(if (scope == ScanScope.DEVICE) "开始扫描" else "选择目录")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("返回") } },
     )
 }
 
 @Composable
-private fun EmptyLibrary(onScan: () -> Unit, onImport: () -> Unit) {
+private fun EmptyLibrary(onImport: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -423,9 +510,8 @@ private fun EmptyLibrary(onScan: () -> Unit, onImport: () -> Unit) {
                 Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
             Text("还没有发现书籍", style = MaterialTheme.typography.titleLarge)
-            Text("扫描设备或指定书籍目录，PXReader 会自动识别 TXT 与 EPUB。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            FilledTonalButton(onClick = onScan) { Text("开始扫描") }
-            TextButton(onClick = onImport) { Text("手动选择文件") }
+            Text("导入时可扫描设备或指定目录，也可以直接选择 TXT 与 EPUB 文件。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FilledTonalButton(onClick = onImport) { Text("导入书籍") }
         }
     }
 }
