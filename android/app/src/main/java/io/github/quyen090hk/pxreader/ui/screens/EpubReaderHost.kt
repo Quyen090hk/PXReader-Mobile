@@ -517,7 +517,7 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
     val align = if (settings.justified) "justify" else "start"
     val indent = if (settings.firstLineIndent) "2em" else "0"
     val css = """
-        :root{color-scheme:light;background:$background;color:$foreground}
+        :root{color-scheme:light;background:$background;color:$foreground;--px-content-inset:1em}
         html,body{margin:0;min-height:100%;background:$background;color:$foreground}
         body{box-sizing:border-box;width:100vw !important;min-width:100vw !important;max-width:none !important;padding:0 !important;font-family:$font !important;font-size:${settings.fontScale}rem !important;line-height:${settings.lineHeight} !important;letter-spacing:${settings.letterSpacing}em !important;font-kerning:normal;font-variant-east-asian:proportional-width;line-break:strict;word-break:normal;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;text-autospace:normal}
         p,li,blockquote{text-align:$align;text-justify:inter-ideograph}
@@ -529,10 +529,11 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
         table{max-width:100% !important;display:block;overflow:auto} pre{white-space:pre-wrap;word-break:break-word;tab-size:2} code{font-family:monospace;font-size:.9em}
         ruby{ruby-position:over} rt{font-size:.52em;letter-spacing:0} mark[data-px-annotation-id]{color:inherit;border-radius:.16em;padding:0 .03em}
         html.px-paged{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;overflow:hidden !important;scroll-behavior:auto;overscroll-behavior:none;touch-action:pan-x}
-        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:1.5em 1em 2.5em !important;column-width:calc(100vw - 2em);column-gap:2em;column-fill:auto;overflow:visible;overscroll-behavior:none;touch-action:pan-x}
+        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:var(--px-content-inset) !important;column-width:calc(100vw - 2em);column-gap:2em;column-fill:auto;overflow:visible;overscroll-behavior:none;touch-action:pan-x}
+        html.px-paged p,html.px-paged li,html.px-paged blockquote{orphans:1;widows:1}
         html.px-paged h1,html.px-paged h2,html.px-paged h3,html.px-paged figure,html.px-paged pre,html.px-paged table{break-inside:avoid}
         html.px-scroll{overflow-x:hidden;overflow-y:auto;scroll-behavior:smooth}
-        html.px-scroll body{max-width:46rem !important;margin:auto !important;padding:1.5em 1em 3em !important}
+        html.px-scroll body{max-width:46rem !important;margin:auto !important;padding:var(--px-content-inset) !important}
     """.trimIndent().replace("\n", " ")
     return """
         (() => {
