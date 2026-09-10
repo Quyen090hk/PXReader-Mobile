@@ -104,7 +104,6 @@ private fun EpubWebView(
                 settings.apply {
                     javaScriptEnabled = true // only app-injected selection/scroll bridge; EPUB scripts are stripped.
                     domStorageEnabled = false
-                    databaseEnabled = false
                     allowFileAccess = false
                     allowContentAccess = false
                     blockNetworkLoads = true
@@ -163,7 +162,11 @@ private class EpubBridge(
     }
 
     @JavascriptInterface
-    fun progress(value: Float) = mainHandler.post { progress(value.coerceIn(0f, 1f)) }
+    fun progress(value: Float) {
+        val clampedValue: Float = value.coerceIn(0f, 1f)
+        val callback: (Float) -> Unit = progress
+        mainHandler.post { callback(clampedValue) }
+    }
 }
 
 private class EpubZipPathHandler(

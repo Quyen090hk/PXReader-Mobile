@@ -4,8 +4,8 @@ local.properties
 *.iml
 build/
 **/build/
+**/build-logs/
 .kotlin/
 captures/
 *.jks
 *.keystore
-
