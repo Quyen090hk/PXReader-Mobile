@@ -20,8 +20,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.material3.MaterialTheme
 import androidx.webkit.WebViewAssetLoader
 import io.github.quyen090hk.pxreader.data.ReaderChapter
 import io.github.quyen090hk.pxreader.data.db.AnnotationEntity
@@ -95,6 +98,8 @@ private fun EpubWebView(
     modifier: Modifier,
 ) {
     val context = LocalContext.current
+    val foreground = MaterialTheme.colorScheme.onSurface.toCssHex()
+    val background = MaterialTheme.colorScheme.surface.toCssHex()
     AndroidView(
         factory = {
             val loader = WebViewAssetLoader.Builder()
@@ -135,7 +140,15 @@ private fun EpubWebView(
                 val baseUrl = "https://appassets.androidplatform.net/epub/$documentId/${chapter.href.orEmpty()}"
                 view.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
             } else {
-                view.evaluateJavascript(themeScript(fontScale, lineHeight), null)
+                view.evaluateJavascript(
+                    themeScript(
+                        fontScale = fontScale,
+                        lineHeight = lineHeight,
+                        foreground = foreground,
+                        background = background,
+                    ),
+                    null,
+                )
             }
         },
         modifier = modifier,
@@ -190,8 +203,10 @@ private class EpubZipPathHandler(
     }
 }
 
-private fun themeScript(fontScale: Float, lineHeight: Float) =
-    "document.documentElement.style.setProperty('--px-font-size','${fontScale}rem');document.documentElement.style.setProperty('--px-line-height','${lineHeight}');"
+private fun themeScript(fontScale: Float, lineHeight: Float, foreground: String, background: String) =
+    "document.documentElement.style.setProperty('--px-font-size','${fontScale}rem');document.documentElement.style.setProperty('--px-line-height','${lineHeight}');document.documentElement.style.setProperty('--px-foreground','$foreground');document.documentElement.style.setProperty('--px-background','$background');"
+
+private fun Color.toCssHex(): String = "#%06X".format(toArgb() and 0xFFFFFF)
 
 private fun highlightScript(annotations: List<AnnotationEntity>): String {
     val payload = org.json.JSONArray().apply {

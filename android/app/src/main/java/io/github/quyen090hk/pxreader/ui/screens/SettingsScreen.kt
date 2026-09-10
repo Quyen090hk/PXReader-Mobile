@@ -2,70 +2,125 @@ package io.github.quyen090hk.pxreader.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.quyen090hk.pxreader.settings.ReaderSettings
 import io.github.quyen090hk.pxreader.settings.SettingsRepository
 import io.github.quyen090hk.pxreader.settings.ThemeMode
 import kotlinx.coroutines.launch
-import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsRoute(settings: SettingsRepository, onBack: () -> Unit) {
     val current by settings.settings.collectAsStateWithLifecycle(initialValue = ReaderSettings())
     val scope = rememberCoroutineScope()
-    Scaffold(topBar = { TopAppBar(title = { Text("阅读设置") }, navigationIcon = { TextButton(onClick = onBack) { Text("返回") } }) }) { padding ->
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("阅读偏好") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回") }
+                },
+            )
+        },
+    ) { padding ->
         Column(
-            modifier = androidx.compose.ui.Modifier.fillMaxSize().padding(padding).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("主题", style = MaterialTheme.typography.titleMedium)
+            Text("按照你的节奏阅读", style = MaterialTheme.typography.headlineSmall)
+            Text("这些设置仅保存在当前设备，随时可以调整。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            PreferenceCard(title = "外观", subtitle = "选择适合当前环境的界面") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ThemeMode.entries.forEach { mode ->
                         FilterChip(
                             selected = current.themeMode == mode,
                             onClick = { scope.launch { settings.update { it.copy(themeMode = mode) } } },
-                            label = { Text(when (mode) { ThemeMode.SYSTEM -> "跟随系统"; ThemeMode.LIGHT -> "浅色"; ThemeMode.DARK -> "深色" }) },
+                            label = { Text(mode.label()) },
                         )
                     }
                 }
             }
-            Column {
-                Text("字号 ${"%.0f".format(current.fontScale * 100)}%", style = MaterialTheme.typography.titleMedium)
+
+            PreferenceCard(title = "字号", subtitle = "${"%.0f".format(current.fontScale * 100)}%") {
                 Slider(
                     value = current.fontScale,
                     onValueChange = { next -> scope.launch { settings.update { it.copy(fontScale = next) } } },
                     valueRange = 0.8f..1.8f,
                 )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("小", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("大", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            Column {
-                Text("行距 ${"%.1f".format(current.lineHeight)}", style = MaterialTheme.typography.titleMedium)
+
+            PreferenceCard(title = "行距", subtitle = "${"%.1f".format(current.lineHeight)} 倍") {
                 Slider(
                     value = current.lineHeight,
                     onValueChange = { next -> scope.launch { settings.update { it.copy(lineHeight = next) } } },
                     valueRange = 1.2f..2.4f,
                 )
+                Text("让长段落保持舒适呼吸感。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+
             Spacer(Modifier.weight(1f))
-            Text("设置保存在本机；备份仅导出文档元数据、位置、书签和批注。", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "备份会导出文档元数据、位置、书签和批注；原始文件仍由你保管。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
         }
     }
+}
+
+@Composable
+private fun PreferenceCard(title: String, subtitle: String, content: @Composable () -> Unit) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(PaddingValues(18.dp)),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+            content()
+        }
+    }
+}
+
+private fun ThemeMode.label() = when (this) {
+    ThemeMode.SYSTEM -> "自动"
+    ThemeMode.LIGHT -> "浅色"
+    ThemeMode.DARK -> "深色"
 }

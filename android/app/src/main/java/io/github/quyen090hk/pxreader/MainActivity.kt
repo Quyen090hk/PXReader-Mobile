@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,6 +15,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         container = AppContainer(applicationContext)
         acceptIncoming(intent)
         setContent {
@@ -47,4 +49,3 @@ private fun Intent.parcelableUri(key: String): Uri? = getParcelableExtra(key)
 @Suppress("DEPRECATION")
 private fun Intent.parcelableUriList(key: String): List<Uri> =
     getParcelableArrayListExtra<Uri>(key).orEmpty()
-

@@ -190,7 +190,7 @@ class EpubBook(private val file: File) {
             }
         }
         document.head().appendElement("style").text(
-            "body{margin:0;padding:1.25rem;line-height:var(--px-line-height,1.7);font-size:var(--px-font-size,1rem);color:var(--px-foreground,#1d1b20);background:var(--px-background,#fffbfe)}img{max-width:100%;height:auto}",
+            "body{margin:0;padding:1.75rem 1.4rem 3.5rem;line-height:var(--px-line-height,1.7);font-family:Georgia,'Noto Serif SC',serif;font-size:var(--px-font-size,1rem);letter-spacing:.005em;color:var(--px-foreground,#1d1b20);background:var(--px-background,#fffbfe)}img{max-width:100%;height:auto;border-radius:.75rem}h1,h2,h3{line-height:1.28;margin-top:1.8em}",
         )
         return document.outerHtml()
     }
@@ -238,4 +238,3 @@ private fun resolvePath(baseDir: String, rawPath: String): String {
     }
     return parts.joinToString("/")
 }
-

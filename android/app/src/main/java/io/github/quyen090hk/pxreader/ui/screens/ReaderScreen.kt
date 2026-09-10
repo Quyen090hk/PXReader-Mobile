@@ -8,7 +8,14 @@ import android.text.style.BackgroundColorSpan
 import android.view.Gravity
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,15 +28,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -42,6 +53,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -98,31 +110,39 @@ private fun ReaderScreen(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
-                Text("目录", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(20.dp))
-                LazyColumn {
-                    items(reader?.chapters.orEmpty()) { chapter ->
-                        TextButton(
-                            onClick = {
-                                model.navigateTo(TextLocator.atChapterStart(chapter.index, chapter.href))
-                                scope.launch { drawerState.close() }
-                            },
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                        ) { Text(chapter.title, modifier = Modifier.fillMaxWidth()) }
+                Column(Modifier.fillMaxSize().padding(top = 24.dp)) {
+                    Text("目录", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(horizontal = 24.dp))
+                    Text("跳转到任意章节", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp))
+                    LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
+                        items(reader?.chapters.orEmpty()) { chapter ->
+                            TextButton(
+                                onClick = {
+                                    model.navigateTo(TextLocator.atChapterStart(chapter.index, chapter.href))
+                                    scope.launch { drawerState.close() }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                            ) {
+                                Text(chapter.title, modifier = Modifier.fillMaxWidth(), maxLines = 2)
+                            }
+                        }
                     }
                 }
             }
         },
     ) {
         Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
             topBar = {
-                TopAppBar(
+                CenterAlignedTopAppBar(
                     title = { Text(reader?.document?.title ?: "PXReader", maxLines = 1) },
-                    navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回书架") }
+                    },
                     actions = {
-                        TextButton(onClick = { scope.launch { drawerState.open() } }) { Text("目录") }
-                        TextButton(onClick = { searchOpen = true }) { Text("搜索") }
-                        TextButton(onClick = { reader?.let { onAnnotations(it.document.id) } }) { Text("批注") }
-                        TextButton(onClick = onSettings) { Text("设置") }
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Outlined.Menu, contentDescription = "目录") }
+                        IconButton(onClick = { searchOpen = true }) { Icon(Icons.Outlined.Search, contentDescription = "搜索全文") }
+                        IconButton(onClick = { reader?.let { onAnnotations(it.document.id) } }) { Icon(Icons.Outlined.MoreVert, contentDescription = "批注") }
+                        IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, contentDescription = "阅读设置") }
                     },
                 )
             },
@@ -131,49 +151,82 @@ private fun ReaderScreen(
                 state.loading -> Column(Modifier.fillMaxSize().padding(padding), verticalArrangement = Arrangement.Center, horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                     CircularProgressIndicator(); Text("正在打开文档…", modifier = Modifier.padding(top = 12.dp))
                 }
-                state.error != null -> Column(Modifier.fillMaxSize().padding(24.dp)) { Text(state.error, color = MaterialTheme.colorScheme.error) }
+                state.error != null -> Column(Modifier.fillMaxSize().padding(padding).padding(24.dp)) { Text(state.error, color = MaterialTheme.colorScheme.error) }
                 reader != null && state.locator != null -> {
                     val chapter = reader.chapters.getOrNull(state.locator.chapterIndex) ?: reader.chapters.first()
                     Column(Modifier.fillMaxSize().padding(padding)) {
-                        Text(
-                            "${chapter.title} · ${(state.locator.progress * 100).toInt()}%",
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
-                        )
-                        if (reader.format == DocumentFormat.TXT) {
-                            TextReaderSurface(
-                                chapter = chapter,
-                                locator = state.locator,
-                                locationRevision = state.locationRevision,
-                                annotations = state.annotations,
-                                settings = settings,
-                                onSelection = model::selectText,
-                                onProgress = model::updateProgress,
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else {
-                            EpubReaderHost(
-                                documentId = reader.document.id,
-                                storedFileName = reader.document.storedFileName,
-                                chapter = chapter,
-                                locator = state.locator,
-                                annotations = state.annotations,
-                                fontScale = settings.fontScale,
-                                lineHeight = settings.lineHeight,
-                                onRequestHtml = model::epubHtml,
-                                onSelection = model::selectEpubText,
-                                onProgress = model::updateProgress,
-                                modifier = Modifier.weight(1f),
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                        ) {
+                            Text(
+                                chapter.title,
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
                             )
                         }
-                        state.pendingSelection?.let { selection ->
-                            Row(
-                                Modifier.fillMaxWidth().padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                Text("已选择 ${selection.quote.take(18)}", modifier = Modifier.weight(1f), maxLines = 1)
-                                TextButton(onClick = model::clearSelection) { Text("取消") }
-                                Button(onClick = { annotationOpen = true }) { Text("添加批注") }
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            if (reader.format == DocumentFormat.TXT) {
+                                TextReaderSurface(
+                                    chapter = chapter,
+                                    locator = state.locator,
+                                    locationRevision = state.locationRevision,
+                                    annotations = state.annotations,
+                                    settings = settings,
+                                    onSelection = model::selectText,
+                                    onProgress = model::updateProgress,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else {
+                                EpubReaderHost(
+                                    documentId = reader.document.id,
+                                    storedFileName = reader.document.storedFileName,
+                                    chapter = chapter,
+                                    locator = state.locator,
+                                    annotations = state.annotations,
+                                    fontScale = settings.fontScale,
+                                    lineHeight = settings.lineHeight,
+                                    onRequestHtml = model::epubHtml,
+                                    onSelection = model::selectEpubText,
+                                    onProgress = model::updateProgress,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            }
+                            state.pendingSelection?.let { selection ->
+                                Surface(
+                                    modifier = Modifier.align(androidx.compose.ui.Alignment.BottomCenter).padding(16.dp),
+                                    shape = MaterialTheme.shapes.medium,
+                                    tonalElevation = 5.dp,
+                                    shadowElevation = 4.dp,
+                                ) {
+                                    Row(
+                                        Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                    ) {
+                                        Text("已选择 ${selection.quote.take(18)}", modifier = Modifier.weight(1f), maxLines = 1)
+                                        TextButton(onClick = model::clearSelection) { Text("取消") }
+                                        Button(onClick = { annotationOpen = true }) { Text("添加批注") }
+                                    }
+                                }
+                            }
+                        }
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                        ) {
+                            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("第 ${chapter.index + 1} / ${reader.chapters.size} 章", style = MaterialTheme.typography.labelMedium)
+                                    Text("${(state.locator.progress * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                }
+                                LinearProgressIndicator(
+                                    progress = { state.locator.progress.coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
                             }
                         }
                     }
@@ -255,6 +308,8 @@ private fun TextReaderSurface(
     modifier: Modifier,
 ) {
     val context = LocalContext.current
+    val readerBackground = MaterialTheme.colorScheme.surface.toArgb()
+    val readerForeground = MaterialTheme.colorScheme.onSurface.toArgb()
     AndroidView(
         factory = {
             ScrollView(context).apply {
@@ -273,6 +328,8 @@ private fun TextReaderSurface(
         update = { scroll ->
             val textView = scroll.getChildAt(0) as SelectionAwareTextView
             textView.onSelection = { start, end -> onSelection(start, end) }
+            scroll.setBackgroundColor(readerBackground)
+            textView.setTextColor(readerForeground)
             textView.textSize = 18f * settings.fontScale
             textView.setLineSpacing(0f, settings.lineHeight)
             textView.typeface = Typeface.create(Typeface.SERIF, Typeface.NORMAL)
