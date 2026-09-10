@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.webkit.JavascriptInterface
 import android.webkit.MimeTypeMap
@@ -278,9 +279,17 @@ private class PxReaderWebView(context: Context) : WebView(context) {
     private var downX = 0f
     private var downY = 0f
     private var downAt = 0L
-    private var swipeTriggered = false
-    private var swipeDelta = 0
-    private var swipeDispatched = false
+    private var touchMode = TouchMode.UNDECIDED
+    private var velocityTracker: VelocityTracker? = null
+    private var pendingDragFraction = 0f
+    private var dragFramePosted = false
+    private val dragFrame = Runnable {
+        dragFramePosted = false
+        evaluateJavascript(
+            "window.PXReaderLayout && window.PXReaderLayout.drag($pendingDragFraction);",
+            null,
+        )
+    }
 
     var pagedMode: Boolean = false
     var loadedContentKey: String? = null
@@ -299,75 +308,133 @@ private class PxReaderWebView(context: Context) : WebView(context) {
                 downX = event.x
                 downY = event.y
                 downAt = event.eventTime
-                swipeTriggered = false
-                swipeDelta = 0
-                swipeDispatched = false
+                touchMode = TouchMode.UNDECIDED
+                pendingDragFraction = 0f
+                velocityTracker?.recycle()
+                velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
             }
             MotionEvent.ACTION_MOVE -> {
-                if (!swipeTriggered) {
-                    val dx = event.x - downX
-                    val dy = event.y - downY
-                    if (
-                        event.eventTime - downAt <= 550L &&
-                        abs(dx) > swipeSlop &&
-                        abs(dx) > abs(dy) * 1.15f
-                    ) {
-                        swipeTriggered = true
-                        swipeDelta = if (dx < 0f) 1 else -1
-                        MotionEvent.obtain(event).also { cancelled ->
-                            cancelled.action = MotionEvent.ACTION_CANCEL
-                            super.onTouchEvent(cancelled)
-                            cancelled.recycle()
+                velocityTracker?.addMovement(event)
+                val dx = event.x - downX
+                val dy = event.y - downY
+                if (touchMode == TouchMode.UNDECIDED) {
+                    when {
+                        event.eventTime - downAt > LONG_PRESS_GUARD_MS -> {
+                            touchMode = TouchMode.SELECTION
+                            parent?.requestDisallowInterceptTouchEvent(false)
                         }
-                        dispatchSwipe()
+                        abs(dx) > swipeSlop || abs(dy) > swipeSlop -> {
+                            touchMode = if (abs(dx) > abs(dy) * 1.1f) {
+                                cancelLongPress()
+                                scrollTo(0, 0)
+                                evaluateJavascript(
+                                    "window.getSelection && window.getSelection().removeAllRanges(); window.PXReaderLayout && window.PXReaderLayout.beginDrag();",
+                                    null,
+                                )
+                                TouchMode.HORIZONTAL
+                            } else {
+                                cancelLongPress()
+                                scrollTo(0, 0)
+                                TouchMode.VERTICAL_BLOCKED
+                            }
+                        }
                     }
                 }
-                if (swipeTriggered) {
-                    // WebView has its own native scroll offset in addition to window.scrollX.
-                    // Keep it at zero so a drag can never leave two CSS columns half-visible.
-                    scrollTo(0, 0)
-                    return true
+                when (touchMode) {
+                    TouchMode.HORIZONTAL -> {
+                        scrollTo(0, 0)
+                        scheduleDrag(dx / width.coerceAtLeast(1).toFloat())
+                        return true
+                    }
+                    TouchMode.VERTICAL_BLOCKED -> {
+                        // Paged reading owns only the horizontal axis.
+                        scrollTo(0, 0)
+                        return true
+                    }
+                    else -> Unit
                 }
             }
             MotionEvent.ACTION_UP -> {
+                velocityTracker?.addMovement(event)
                 parent?.requestDisallowInterceptTouchEvent(false)
-                if (swipeTriggered) {
-                    dispatchSwipe()
-                    return true
-                } else {
-                    val dx = event.x - downX
-                    val dy = event.y - downY
-                    if (
-                        event.eventTime - downAt <= 700L &&
-                        abs(dx) >= width * 0.14f &&
-                        abs(dx) > abs(dy) * 1.15f
-                    ) {
-                        swipeTriggered = true
-                        swipeDelta = if (dx < 0f) 1 else -1
-                        dispatchSwipe()
+                when (touchMode) {
+                    TouchMode.HORIZONTAL -> {
+                        finishDrag(event.x - downX)
+                        releaseVelocityTracker()
                         return true
                     }
+                    TouchMode.VERTICAL_BLOCKED -> {
+                        scrollTo(0, 0)
+                        releaseVelocityTracker()
+                        return true
+                    }
+                    else -> releaseVelocityTracker()
                 }
             }
             MotionEvent.ACTION_CANCEL -> {
                 parent?.requestDisallowInterceptTouchEvent(false)
-                if (swipeTriggered) {
-                    dispatchSwipe()
+                if (touchMode == TouchMode.HORIZONTAL) {
+                    cancelPendingDragFrame()
+                    scrollTo(0, 0)
+                    evaluateJavascript("window.PXReaderLayout && window.PXReaderLayout.finishDrag(0, 0);", null)
+                    releaseVelocityTracker()
                     return true
                 }
+                if (touchMode == TouchMode.VERTICAL_BLOCKED) {
+                    scrollTo(0, 0)
+                    releaseVelocityTracker()
+                    return true
+                }
+                releaseVelocityTracker()
             }
         }
         return super.onTouchEvent(event)
     }
 
-    private fun dispatchSwipe() {
-        if (swipeDispatched || swipeDelta == 0) return
-        swipeDispatched = true
+    private fun scheduleDrag(fraction: Float) {
+        pendingDragFraction = fraction.coerceIn(-1f, 1f)
+        if (dragFramePosted) return
+        dragFramePosted = true
+        postOnAnimation(dragFrame)
+    }
+
+    private fun finishDrag(dx: Float) {
+        cancelPendingDragFrame()
+        val widthPx = width.coerceAtLeast(1).toFloat()
+        val fraction = (dx / widthPx).coerceIn(-1f, 1f)
+        velocityTracker?.computeCurrentVelocity(1000)
+        val screensPerSecond = (velocityTracker?.xVelocity ?: 0f) / widthPx
+        val projected = fraction + screensPerSecond * FLING_PROJECTION_SECONDS
+        val delta = when {
+            projected <= -SETTLE_THRESHOLD || screensPerSecond <= -FLING_THRESHOLD -> 1
+            projected >= SETTLE_THRESHOLD || screensPerSecond >= FLING_THRESHOLD -> -1
+            else -> 0
+        }
         scrollTo(0, 0)
         evaluateJavascript(
-            "window.getSelection && window.getSelection().removeAllRanges(); window.PXReaderLayout && window.PXReaderLayout.page($swipeDelta);",
+            "window.PXReaderLayout && (window.PXReaderLayout.drag($fraction), window.PXReaderLayout.finishDrag($delta, ${abs(screensPerSecond)}));",
             null,
         )
+    }
+
+    private fun cancelPendingDragFrame() {
+        if (!dragFramePosted) return
+        removeCallbacks(dragFrame)
+        dragFramePosted = false
+    }
+
+    private fun releaseVelocityTracker() {
+        velocityTracker?.recycle()
+        velocityTracker = null
+    }
+
+    private enum class TouchMode { UNDECIDED, HORIZONTAL, VERTICAL_BLOCKED, SELECTION }
+
+    private companion object {
+        const val LONG_PRESS_GUARD_MS = 480L
+        const val FLING_PROJECTION_SECONDS = 0.18f
+        const val SETTLE_THRESHOLD = 0.22f
+        const val FLING_THRESHOLD = 0.72f
     }
 }
 
@@ -461,8 +528,8 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
         img,svg,video,canvas{max-width:100% !important;max-inline-size:100% !important;height:auto !important;object-fit:contain}
         table{max-width:100% !important;display:block;overflow:auto} pre{white-space:pre-wrap;word-break:break-word;tab-size:2} code{font-family:monospace;font-size:.9em}
         ruby{ruby-position:over} rt{font-size:.52em;letter-spacing:0} mark[data-px-annotation-id]{color:inherit;border-radius:.16em;padding:0 .03em}
-        html.px-paged{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;overflow:hidden !important;scroll-behavior:smooth;overscroll-behavior:none;touch-action:manipulation}
-        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:1.5em 1em 2.5em !important;column-width:calc(100vw - 2em);column-gap:2em;column-fill:auto;overflow:visible}
+        html.px-paged{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;overflow:hidden !important;scroll-behavior:auto;overscroll-behavior:none;touch-action:pan-x}
+        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:1.5em 1em 2.5em !important;column-width:calc(100vw - 2em);column-gap:2em;column-fill:auto;overflow:visible;overscroll-behavior:none;touch-action:pan-x}
         html.px-paged h1,html.px-paged h2,html.px-paged h3,html.px-paged figure,html.px-paged pre,html.px-paged table{break-inside:avoid}
         html.px-scroll{overflow-x:hidden;overflow-y:auto;scroll-behavior:smooth}
         html.px-scroll body{max-width:46rem !important;margin:auto !important;padding:1.5em 1em 3em !important}
@@ -604,26 +671,92 @@ private const val BRIDGE_SCRIPT = """
     }
   };
   let pageMotion = false;
+  let pageAnimation = 0;
+  let dragState = null;
   const pageMetrics = () => {
     const width = pageWidth();
     const scrollWidth = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);
     return {width, max:Math.max(0, scrollWidth - width), count:Math.max(1, Math.ceil(scrollWidth / width))};
   };
-  const scrollToPage = (index, behavior = 'smooth') => {
+  const stopPageAnimation = () => {
+    if (!pageAnimation) return;
+    cancelAnimationFrame(pageAnimation);
+    pageAnimation = 0;
+  };
+  const pageLeft = (index, metrics) => Math.min(metrics.max, Math.max(0, index) * metrics.width);
+  const animateToPage = (index, releaseVelocity = 0) => {
+    stopPageAnimation();
     const metrics = pageMetrics();
     const page = Math.max(0, Math.min(metrics.count - 1, index));
+    const start = window.scrollX;
+    const target = pageLeft(page, metrics);
+    const distance = target - start;
     pageMotion = true;
-    window.scrollTo({left:Math.min(metrics.max, page * metrics.width), top:0, behavior});
-    setTimeout(() => { pageMotion = false; report(); }, behavior === 'smooth' ? 280 : 0);
+    if (Math.abs(distance) < .5) {
+      window.scrollTo({left:target, top:0, behavior:'instant'});
+      pageMotion = false;
+      report();
+      return;
+    }
+    const distanceRatio = Math.min(1, Math.abs(distance) / metrics.width);
+    const velocity = Math.min(3, Math.abs(Number(releaseVelocity) || 0));
+    const duration = Math.max(140, Math.min(300, 170 + distanceRatio * 110 - velocity * 24));
+    const startedAt = performance.now();
+    const frame = (now) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      window.scrollTo({left:start + distance * eased, top:0, behavior:'instant'});
+      if (progress < 1) {
+        pageAnimation = requestAnimationFrame(frame);
+      } else {
+        pageAnimation = 0;
+        window.scrollTo({left:target, top:0, behavior:'instant'});
+        pageMotion = false;
+        report();
+      }
+    };
+    pageAnimation = requestAnimationFrame(frame);
   };
   window.PXReaderLayout = {
     current: () => { const point = caretAt(); return point ? {start:textOffset(point.node, point.point), anchor:nodeAnchor(point.node, point.point)} : {start:0, anchor:''}; },
-    restore: (start, anchor) => requestAnimationFrame(() => { const range = rangeFor(Number(start) || 0, anchor); if (range) scrollToPoint({node:range.startContainer, point:range.startOffset}); setTimeout(report, 80); }),
+    restore: (start, anchor) => requestAnimationFrame(() => {
+      stopPageAnimation();
+      dragState = null;
+      pageMotion = false;
+      const range = rangeFor(Number(start) || 0, anchor);
+      if (range) scrollToPoint({node:range.startContainer, point:range.startOffset});
+      setTimeout(report, 80);
+    }),
     reflow: (locator) => requestAnimationFrame(() => { const saved = locator || window.PXReaderLayout.current(); window.PXReaderLayout.restore(saved.start, saved.anchor); }),
+    beginDrag: () => {
+      if (!document.documentElement.classList.contains('px-paged')) return;
+      stopPageAnimation();
+      const metrics = pageMetrics();
+      const page = Math.max(0, Math.min(metrics.count - 1, Math.round(window.scrollX / metrics.width)));
+      const origin = pageLeft(page, metrics);
+      dragState = {page, origin, metrics};
+      pageMotion = true;
+      window.scrollTo({left:origin, top:0, behavior:'instant'});
+    },
+    drag: (fraction) => {
+      if (!dragState) return;
+      const amount = Math.max(-1, Math.min(1, Number(fraction) || 0));
+      const target = dragState.origin - amount * dragState.metrics.width;
+      window.scrollTo({left:Math.max(0, Math.min(dragState.metrics.max, target)), top:0, behavior:'instant'});
+    },
+    finishDrag: (delta, releaseVelocity) => {
+      const state = dragState;
+      dragState = null;
+      const metrics = state ? state.metrics : pageMetrics();
+      const page = state ? state.page : Math.round(window.scrollX / metrics.width);
+      const step = Math.max(-1, Math.min(1, Math.sign(Number(delta) || 0)));
+      animateToPage(page + step, releaseVelocity);
+    },
     page: (delta) => {
       if (!document.documentElement.classList.contains('px-paged')) return;
+      dragState = null;
       const width = pageWidth();
-      scrollToPage(Math.round(window.scrollX / width) + Math.sign(delta));
+      animateToPage(Math.round(window.scrollX / width) + Math.sign(delta), 0);
     },
   };
   const annotationColor = (color) => color === 'green' ? '#caeece' : color === 'blue' ? '#bbdefb' : color === 'pink' ? '#f8bbd0' : color === 'orange' ? '#ffe0b2' : '#fff59d';
