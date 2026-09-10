@@ -1,11 +1,13 @@
 package io.github.quyen090hk.pxreader.reader
 
+import android.net.Uri
 import android.util.Xml
 import io.github.quyen090hk.pxreader.data.ReaderChapter
 import io.github.quyen090hk.pxreader.data.db.DocumentEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
+import org.jsoup.parser.Parser
 import org.xmlpull.v1.XmlPullParser
 import java.io.File
 import java.io.FileInputStream
@@ -166,9 +168,27 @@ class EpubBook(private val file: File) {
         val rawSpine = spineIds.mapNotNull { id -> manifest[id] }
             .filter { it.mediaType.contains("html", true) || it.href.endsWith(".xhtml", true) || it.href.endsWith(".html", true) }
         if (rawSpine.isEmpty()) error("Invalid EPUB: package has no readable spine")
-        val navTitles = readNavTitles(manifest.values.firstOrNull { it.properties.split(Regex("\\s+")).contains("nav") }?.href, zip, opfDir, rawSpine)
+        val navTitles = readNavTitles(
+            manifest.values.firstOrNull { it.properties.split(Regex("\\s+")).contains("nav") }?.href,
+            zip,
+            rawSpine,
+        )
+        val ncxTitles = readNcxTitles(
+            manifest.values.firstOrNull { item ->
+                item.mediaType.contains("ncx", ignoreCase = true) || item.href.endsWith(".ncx", ignoreCase = true)
+            }?.href,
+            zip,
+            rawSpine,
+        )
         val spine = rawSpine.mapIndexed { index, item ->
-            EpubSpineItem(index, item.href, navTitles[item.href] ?: titleFromHtml(zip, item.href) ?: fileName(item.href))
+            EpubSpineItem(
+                index,
+                item.href,
+                navTitles[item.href]
+                    ?: ncxTitles[item.href]
+                    ?: titleFromHtml(zip, item.href, title)
+                    ?: fileName(item.href),
+            )
         }
         val coverHref = manifest.values.firstOrNull { it.properties.split(Regex("\\s+")).contains("cover-image") }?.href
             ?: legacyCoverId?.let { manifest[it]?.href }
@@ -181,7 +201,6 @@ class EpubBook(private val file: File) {
     private fun readNavTitles(
         navPath: String?,
         zip: ZipFile,
-        opfDir: String,
         spine: List<ManifestItem>,
     ): Map<String, String> {
         if (navPath == null) return emptyMap()
@@ -196,9 +215,51 @@ class EpubBook(private val file: File) {
         }.toMap()
     }
 
-    private fun titleFromHtml(zip: ZipFile, href: String): String? = runCatching {
+    private fun readNcxTitles(
+        ncxPath: String?,
+        zip: ZipFile,
+        spine: List<ManifestItem>,
+    ): Map<String, String> {
+        if (ncxPath == null) return emptyMap()
+        val ncxXml = zip.getEntry(ncxPath)
+            ?.let { zip.getInputStream(it).bufferedReader().use { reader -> reader.readText() } }
+            ?: return emptyMap()
+        val spinePaths = spine.mapTo(hashSetOf()) { it.href }
+        val titles = linkedMapOf<String, String>()
+        val document = Jsoup.parse(ncxXml, "", Parser.xmlParser())
+        document.getAllElements()
+            .filter { element -> element.tagName().substringAfter(':').equals("navPoint", ignoreCase = true) }
+            .forEach { navPoint ->
+                val source = navPoint.getAllElements()
+                    .firstOrNull { element -> element.tagName().substringAfter(':').equals("content", ignoreCase = true) }
+                    ?.attr("src")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return@forEach
+                val label = navPoint.getAllElements()
+                    .firstOrNull { element -> element.tagName().substringAfter(':').equals("navLabel", ignoreCase = true) }
+                    ?.text()
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: return@forEach
+                val relativePath = Uri.decode(source.substringBefore('#').substringBefore('?'))
+                val fullPath = resolvePath(ncxPath.substringBeforeLast('/', ""), relativePath)
+                if (fullPath in spinePaths) {
+                    // EPUB 2 often points both a section and its first nested chapter at the same
+                    // XHTML file. The later, more specific entry is the useful reader title.
+                    titles[fullPath] = label
+                }
+            }
+        return titles
+    }
+
+    private fun titleFromHtml(zip: ZipFile, href: String, bookTitle: String?): String? = runCatching {
         val html = zip.getEntry(href)?.let { zip.getInputStream(it).bufferedReader().use { reader -> reader.readText() } } ?: return null
-        Jsoup.parse(html).selectFirst("h1, h2, h3, title")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+        val document = Jsoup.parse(html)
+        document.select("h1, h2, h3")
+            .asSequence()
+            .map { it.text().trim() }
+            .firstOrNull { heading -> heading.isNotEmpty() && !heading.equals(bookTitle, ignoreCase = true) }
+            ?: document.title().trim().takeIf { value -> value.isNotEmpty() && !value.equals(bookTitle, ignoreCase = true) }
     }.getOrNull()
 
     private fun readEntry(path: String): String? = ZipFile(file).use { zip ->

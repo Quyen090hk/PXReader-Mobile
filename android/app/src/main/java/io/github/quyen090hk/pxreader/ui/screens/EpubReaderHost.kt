@@ -48,6 +48,7 @@ fun EpubReaderHost(
     storedFileName: String,
     chapter: ReaderChapter,
     locator: TextLocator,
+    locationRevision: Long,
     annotations: List<AnnotationEntity>,
     settings: ReaderSettings,
     onRequestHtml: suspend (Int) -> String,
@@ -78,6 +79,7 @@ fun EpubReaderHost(
         documentId = documentId,
         chapter = chapter,
         locator = locator,
+        locationRevision = locationRevision,
         annotations = annotations,
         html = requireNotNull(html),
         settings = settings,
@@ -94,6 +96,7 @@ fun TxtReaderHost(
     documentId: String,
     chapter: ReaderChapter,
     locator: TextLocator,
+    locationRevision: Long,
     annotations: List<AnnotationEntity>,
     settings: ReaderSettings,
     onSelection: (Int, Int) -> Unit,
@@ -107,6 +110,7 @@ fun TxtReaderHost(
         documentId = documentId,
         chapter = chapter,
         locator = locator,
+        locationRevision = locationRevision,
         annotations = annotations,
         html = html,
         settings = settings,
@@ -124,6 +128,7 @@ private fun ReaderWebHost(
     documentId: String,
     chapter: ReaderChapter,
     locator: TextLocator,
+    locationRevision: Long,
     annotations: List<AnnotationEntity>,
     html: String,
     settings: ReaderSettings,
@@ -140,6 +145,7 @@ private fun ReaderWebHost(
             documentId = documentId,
             chapter = chapter,
             locator = locator,
+            locationRevision = locationRevision,
             annotations = chapterAnnotations,
             html = html,
             settings = settings,
@@ -159,6 +165,7 @@ private fun ReaderWebView(
     documentId: String,
     chapter: ReaderChapter,
     locator: TextLocator,
+    locationRevision: Long,
     annotations: List<AnnotationEntity>,
     html: String,
     settings: ReaderSettings,
@@ -210,6 +217,7 @@ private fun ReaderWebView(
                         readerView.postDelayed({
                             readerView.evaluateJavascript(BRIDGE_SCRIPT, null)
                             readerView.evaluateJavascript(readerView.themeScript, null)
+                            readerView.appliedThemeScript = readerView.themeScript
                             readerView.evaluateJavascript(readerView.highlightScript, null)
                             readerView.evaluateJavascript(
                                 "window.PXReaderLayout && window.PXReaderLayout.restore(${readerView.restoreCharOffset}, ${JSONObject.quote(readerView.restoreAnchor ?: "")});",
@@ -228,18 +236,32 @@ private fun ReaderWebView(
             val contentKey = "$documentId:${chapter.index}"
             if (view.loadedContentKey != contentKey) {
                 view.loadedContentKey = contentKey
+                view.appliedLocationRevision = locationRevision
                 view.scrollTo(0, 0)
                 val baseUrl = source?.let {
                     "https://appassets.androidplatform.net/epub/$documentId/${chapter.href.orEmpty()}"
                 } ?: "https://appassets.androidplatform.net/text/$documentId/${chapter.index}.html"
                 view.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
             } else {
-                view.evaluateJavascript(view.themeScript, null)
+                val themeChanged = view.appliedThemeScript != view.themeScript
+                if (themeChanged) {
+                    view.evaluateJavascript(view.themeScript, null)
+                    view.appliedThemeScript = view.themeScript
+                }
                 view.evaluateJavascript(view.highlightScript, null)
-                view.evaluateJavascript(
-                    "window.PXReaderLayout && window.PXReaderLayout.restore(${view.restoreCharOffset}, ${JSONObject.quote(view.restoreAnchor ?: "")});",
-                    null,
-                )
+                when {
+                    view.appliedLocationRevision != locationRevision -> {
+                        view.appliedLocationRevision = locationRevision
+                        view.evaluateJavascript(
+                            "window.PXReaderLayout && window.PXReaderLayout.restore(${view.restoreCharOffset}, ${JSONObject.quote(view.restoreAnchor ?: "")});",
+                            null,
+                        )
+                    }
+                    themeChanged -> view.evaluateJavascript(
+                        "window.PXReaderLayout && window.PXReaderLayout.restore(${view.restoreCharOffset}, ${JSONObject.quote(view.restoreAnchor ?: "")});",
+                        null,
+                    )
+                }
             }
         },
         modifier = modifier,
@@ -251,7 +273,9 @@ private class PxReaderWebView(context: Context) : WebView(context) {
     var loadedContentKey: String? = null
     var restoreCharOffset: Int = 0
     var restoreAnchor: String? = null
+    var appliedLocationRevision: Long = -1L
     var themeScript: String = ""
+    var appliedThemeScript: String? = null
     var highlightScript: String = ""
 }
 
@@ -336,8 +360,7 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
     val css = """
         :root{color-scheme:light;background:$background;color:$foreground}
         html,body{margin:0;min-height:100%;background:$background;color:$foreground}
-        :root{--px-side-gutter:48px}
-        body{box-sizing:border-box;width:100vw !important;min-width:100vw !important;max-width:none !important;padding:36px var(--px-side-gutter) 56px;font-family:$font !important;font-size:${settings.fontScale}rem !important;line-height:${settings.lineHeight} !important;letter-spacing:${settings.letterSpacing}em !important;font-kerning:normal;font-variant-east-asian:proportional-width;line-break:strict;word-break:normal;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;text-autospace:normal}
+        body{box-sizing:border-box;width:100vw !important;min-width:100vw !important;max-width:none !important;padding:0 !important;font-family:$font !important;font-size:${settings.fontScale}rem !important;line-height:${settings.lineHeight} !important;letter-spacing:${settings.letterSpacing}em !important;font-kerning:normal;font-variant-east-asian:proportional-width;line-break:strict;word-break:normal;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;text-autospace:normal}
         p,li,blockquote{text-align:$align;text-justify:inter-ideograph}
         p{margin:0 0 ${settings.paragraphSpacing}em;text-indent:$indent}
         p:empty{min-height:${settings.paragraphSpacing}em}
@@ -346,14 +369,11 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
         img,svg,video,canvas{max-width:100% !important;max-inline-size:100% !important;height:auto !important;object-fit:contain}
         table{max-width:100% !important;display:block;overflow:auto} pre{white-space:pre-wrap;word-break:break-word;tab-size:2} code{font-family:monospace;font-size:.9em}
         ruby{ruby-position:over} rt{font-size:.52em;letter-spacing:0} mark[data-px-annotation-id]{color:inherit;border-radius:.16em;padding:0 .03em}
-        html.px-paged{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;overflow-x:auto;overflow-y:hidden;scroll-behavior:smooth}
-        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:0;column-width:100vw;column-gap:0;column-fill:auto;overflow:visible}
-        /* CSS columns fragment the body but only apply body padding to its first and final
-           fragments.  A cloned inner flow gives every virtual page the same real text gutter. */
-        html.px-paged #px-reader-flow{display:block;padding:36px var(--px-side-gutter) 56px;-webkit-box-decoration-break:clone;box-decoration-break:clone}
+        html.px-paged{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;overflow:hidden !important;scroll-behavior:smooth;overscroll-behavior:none;touch-action:manipulation}
+        html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:1.5em 1em 2.5em !important;column-width:calc(100vw - 2em);column-gap:2em;column-fill:auto;overflow:visible}
         html.px-paged h1,html.px-paged h2,html.px-paged h3,html.px-paged figure,html.px-paged pre,html.px-paged table{break-inside:avoid}
         html.px-scroll{overflow-x:hidden;overflow-y:auto;scroll-behavior:smooth}
-        html.px-scroll body{max-width:46rem;margin:auto}
+        html.px-scroll body{max-width:46rem !important;margin:auto !important;padding:1.5em 1em 3em !important}
     """.trimIndent().replace("\n", " ")
     return """
         (() => {
@@ -362,12 +382,6 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
           let style = document.getElementById('px-reader-theme');
           if (!style) { style = document.createElement('style'); style.id = 'px-reader-theme'; document.head.appendChild(style); }
           style.textContent = ${JSONObject.quote(css)};
-          let flow = document.getElementById('px-reader-flow');
-          if (!flow && document.body) {
-            flow = document.createElement('main'); flow.id = 'px-reader-flow';
-            Array.from(document.body.childNodes).forEach((node) => flow.appendChild(node));
-            document.body.appendChild(flow);
-          }
           document.documentElement.classList.remove('px-paged','px-scroll');
           document.documentElement.classList.add('px-$mode');
         })();
@@ -504,9 +518,10 @@ private const val BRIDGE_SCRIPT = """
     page: (delta) => {
       if (!document.documentElement.classList.contains('px-paged')) return;
       const width = pageWidth();
-      const max = Math.max(0, document.scrollingElement.scrollWidth - width);
+      const scrollWidth = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);
+      const max = Math.max(0, scrollWidth - width);
       const target = Math.max(0, Math.min(max, Math.round(window.scrollX / width + delta) * width));
-      window.scrollBy({left:target - window.scrollX, top:-window.scrollY, behavior:'smooth'});
+      window.scrollTo({left:target, top:0, behavior:'smooth'});
       setTimeout(report, 260);
     },
   };
@@ -551,6 +566,11 @@ private const val BRIDGE_SCRIPT = """
     }, 120);
   };
   document.addEventListener('selectionchange', reportSelection);
+  document.addEventListener('touchmove', (event) => {
+    if (!document.documentElement.classList.contains('px-paged')) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) event.preventDefault();
+  }, {passive:false});
   document.addEventListener('click', (event) => {
     const link = event.target.closest && event.target.closest('a[href^="#"]');
     if (link) {
