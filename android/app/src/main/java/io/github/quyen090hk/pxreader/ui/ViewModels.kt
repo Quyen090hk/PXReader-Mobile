@@ -13,7 +13,9 @@ import io.github.quyen090hk.pxreader.data.TextLocator
 import io.github.quyen090hk.pxreader.data.db.AnnotationEntity
 import io.github.quyen090hk.pxreader.data.db.DocumentEntity
 import io.github.quyen090hk.pxreader.importer.DocumentImporter
+import io.github.quyen090hk.pxreader.importer.DocumentScanner
 import io.github.quyen090hk.pxreader.importer.ImportOutcome
+import io.github.quyen090hk.pxreader.importer.ScanProgress
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,12 +27,15 @@ import kotlin.math.roundToInt
 data class LibraryUiState(
     val documents: List<DocumentEntity> = emptyList(),
     val importing: Boolean = false,
+    val scanning: Boolean = false,
+    val scanProgress: ScanProgress? = null,
     val message: String? = null,
 )
 
 class LibraryViewModel(
     private val repository: ReaderRepository,
     private val importer: DocumentImporter,
+    private val scanner: DocumentScanner,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(LibraryUiState())
     val state: StateFlow<LibraryUiState> = mutableState.asStateFlow()
@@ -63,6 +68,39 @@ class LibraryViewModel(
 
     fun updateTags(documentId: String, input: String) = viewModelScope.launch {
         repository.updateTags(documentId, input.split(',', '，').map(String::trim).filter(String::isNotEmpty).toSet())
+    }
+
+    fun scanTree(uri: android.net.Uri) = launchScan { report -> scanner.scanTree(uri, report) }
+
+    fun scanSharedStorage(onPermissionRequired: () -> Unit) {
+        if (!scanner.hasAllFilesAccess) {
+            mutableState.update { it.copy(message = "扫描整个设备需要系统授予“所有文件访问”权限。") }
+            onPermissionRequired()
+            return
+        }
+        launchScan { report -> scanner.scanSharedStorage(report) }
+    }
+
+    private fun launchScan(work: suspend ((ScanProgress) -> Unit) -> io.github.quyen090hk.pxreader.importer.ScanReport) {
+        viewModelScope.launch {
+            mutableState.update { it.copy(scanning = true, scanProgress = ScanProgress(), message = null) }
+            val result = runCatching { work { progress ->
+                if (progress.examined % 10 == 0 || progress.candidates > 0) {
+                    mutableState.update { it.copy(scanProgress = progress) }
+                }
+            } }
+            result.onSuccess { report ->
+                mutableState.update {
+                    it.copy(
+                        scanning = false,
+                        scanProgress = null,
+                        message = "扫描完成：发现 ${report.candidates} 本，新增 ${report.imported} 本，已存在 ${report.duplicates} 本。",
+                    )
+                }
+            }.onFailure { error ->
+                mutableState.update { it.copy(scanning = false, scanProgress = null, message = error.message ?: "扫描未完成。") }
+            }
+        }
     }
 
     fun consumeMessage() = mutableState.update { it.copy(message = null) }

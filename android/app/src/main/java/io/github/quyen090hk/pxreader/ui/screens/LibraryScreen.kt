@@ -1,9 +1,14 @@
 package io.github.quyen090hk.pxreader.ui.screens
 
 import android.net.Uri
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,7 +55,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,11 +69,15 @@ import io.github.quyen090hk.pxreader.backup.BackupExporter
 import io.github.quyen090hk.pxreader.data.ReaderRepository
 import io.github.quyen090hk.pxreader.data.db.DocumentEntity
 import io.github.quyen090hk.pxreader.importer.DocumentImporter
+import io.github.quyen090hk.pxreader.importer.DocumentScanner
 import io.github.quyen090hk.pxreader.ui.LibraryViewModel
 import io.github.quyen090hk.pxreader.ui.PxReaderViewModelFactory
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
@@ -73,13 +85,14 @@ import java.util.Date
 fun LibraryRoute(
     repository: ReaderRepository,
     importer: DocumentImporter,
+    scanner: DocumentScanner,
     backupExporter: BackupExporter,
     incoming: StateFlow<List<Uri>>,
     onIncomingConsumed: () -> Unit,
     onOpenDocument: (String) -> Unit,
     onSettings: () -> Unit,
 ) {
-    val model: LibraryViewModel = viewModel(factory = remember { PxReaderViewModelFactory { LibraryViewModel(repository, importer) } })
+    val model: LibraryViewModel = viewModel(factory = remember { PxReaderViewModelFactory { LibraryViewModel(repository, importer, scanner) } })
     val incomingUris by incoming.collectAsStateWithLifecycle()
     LaunchedEffect(incomingUris) {
         if (incomingUris.isNotEmpty()) {
@@ -100,12 +113,30 @@ private fun LibraryScreen(
 ) {
     val state by model.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         model.importUris(uris, onOpenDocument)
     }
     val backupPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) scope.launch { backupExporter.exportBackup(uri) }
     }
+    val treeScanner = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let(model::scanTree)
+    }
+    val legacyPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) model.scanSharedStorage { }
+    }
+    val allFilesAccess = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        model.scanSharedStorage { }
+    }
+    val requestDeviceScan = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            allFilesAccess.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}")))
+        } else {
+            legacyPermission.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+    var scanDialogVisible by remember { mutableStateOf(false) }
     var selectedTag by remember { mutableStateOf<String?>(null) }
     var editTagsFor by remember { mutableStateOf<DocumentEntity?>(null) }
     val allTags = remember(state.documents) { state.documents.flatMap { it.tags() }.distinct().sorted() }
@@ -141,6 +172,7 @@ private fun LibraryScreen(
                 LibraryHero(
                     documentCount = state.documents.size,
                     onImport = { picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
+                    onScan = { scanDialogVisible = true },
                 )
             }
             state.message?.let { message ->
@@ -156,6 +188,20 @@ private fun LibraryScreen(
                         ) {
                             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                             Text("正在整理你的新文档…", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+            if (state.scanning) {
+                item {
+                    val progress = state.scanProgress
+                    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = MaterialTheme.shapes.medium) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("正在扫描本地书籍", style = MaterialTheme.typography.titleMedium)
+                            Text("已检查 ${progress?.examined ?: 0} 个文件 · 发现 ${progress?.candidates ?: 0} 本", style = MaterialTheme.typography.bodySmall)
+                            progress?.currentPath?.takeIf { it.isNotBlank() }?.let { path ->
+                                Text(path, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
                         }
                     }
                 }
@@ -195,10 +241,17 @@ private fun LibraryScreen(
             onSave = { tags -> model.updateTags(document.id, tags); editTagsFor = null },
         )
     }
+    if (scanDialogVisible) {
+        ScanDialog(
+            onDismiss = { scanDialogVisible = false },
+            onScanFolder = { scanDialogVisible = false; treeScanner.launch(null) },
+            onScanDevice = { scanDialogVisible = false; model.scanSharedStorage(requestDeviceScan) },
+        )
+    }
 }
 
 @Composable
-private fun LibraryHero(documentCount: Int, onImport: () -> Unit) {
+private fun LibraryHero(documentCount: Int, onImport: () -> Unit, onScan: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
@@ -214,12 +267,31 @@ private fun LibraryHero(documentCount: Int, onImport: () -> Unit) {
             style = MaterialTheme.typography.bodyMedium,
             color = colors.onPrimaryContainer.copy(alpha = 0.82f),
         )
-        FilledTonalButton(onClick = onImport, shape = MaterialTheme.shapes.small) {
-            Icon(Icons.Outlined.FolderOpen, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("导入文档")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilledTonalButton(onClick = onImport, shape = MaterialTheme.shapes.small) {
+                Icon(Icons.Outlined.FolderOpen, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("导入文档")
+            }
+            TextButton(onClick = onScan) { Text("扫描书籍") }
         }
     }
+}
+
+@Composable
+private fun ScanDialog(onDismiss: () -> Unit, onScanFolder: () -> Unit, onScanDevice: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("发现设备中的书籍") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("指定目录会通过系统文件授权递归扫描；全设备扫描会跳转到系统设置申请“所有文件访问”权限。")
+                Text("扫描只识别 TXT 与 EPUB，并将元数据和阅读副本写入本地书库。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = onScanDevice) { Text("扫描设备") } },
+        dismissButton = { TextButton(onClick = onScanFolder) { Text("选择目录") } },
+    )
 }
 
 @Composable
@@ -260,14 +332,12 @@ private fun DocumentCard(document: DocumentEntity, onOpen: () -> Unit, onEditTag
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(13.dp)) {
-                Box(
-                    modifier = Modifier.size(50.dp).clip(MaterialTheme.shapes.small).background(formatColor),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(document.format.uppercase(), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = formatOnColor)
-                }
+                CoverThumbnail(document, formatColor, formatOnColor)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(document.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    document.author?.takeIf { it.isNotBlank() }?.let { author ->
+                        Text(author, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                    }
                     Text(
                         "${document.chapterCount} 章节 · ${formatBytes(document.byteSize)}",
                         style = MaterialTheme.typography.bodySmall,
@@ -276,6 +346,9 @@ private fun DocumentCard(document: DocumentEntity, onOpen: () -> Unit, onEditTag
                     document.lastOpenedAt?.let {
                         Text("上次阅读 ${formatTime(it)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
+                    document.sourcePath?.takeIf { it.isNotBlank() }?.let { path ->
+                        Text(path, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 TextButton(onClick = onEditTags, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("标签") }
             }
@@ -283,6 +356,34 @@ private fun DocumentCard(document: DocumentEntity, onOpen: () -> Unit, onEditTag
                 Text(tags.joinToString("  ·  "), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
             }
         }
+    }
+}
+
+@Composable
+private fun CoverThumbnail(document: DocumentEntity, fallbackColor: androidx.compose.ui.graphics.Color, fallbackContentColor: androidx.compose.ui.graphics.Color) {
+    val context = LocalContext.current
+    val bitmap by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, document.coverFileName) {
+        value = withContext(Dispatchers.IO) {
+            document.coverFileName
+                ?.let { File(context.filesDir, "covers/$it") }
+                ?.takeIf(File::isFile)
+                ?.let { file -> BitmapFactory.decodeFile(file.absolutePath) }
+        }
+    }
+    if (bitmap == null) {
+        Box(
+            modifier = Modifier.size(50.dp).clip(MaterialTheme.shapes.small).background(fallbackColor),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(document.format.uppercase(), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = fallbackContentColor)
+        }
+    } else {
+        Image(
+            bitmap = requireNotNull(bitmap).asImageBitmap(),
+            contentDescription = "《${document.title}》封面",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(50.dp).clip(MaterialTheme.shapes.small),
+        )
     }
 }
 

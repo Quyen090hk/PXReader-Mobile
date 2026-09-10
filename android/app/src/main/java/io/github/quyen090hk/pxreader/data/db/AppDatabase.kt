@@ -23,7 +23,10 @@ data class DocumentEntity(
     val title: String,
     val author: String?,
     val originalFileName: String,
+    val sourceUri: String?,
+    val sourcePath: String?,
     val storedFileName: String,
+    val coverFileName: String?,
     val byteSize: Long,
     val contentHash: String,
     val tagsJson: String,
@@ -193,10 +196,9 @@ interface PxReaderDao {
         SearchUnitEntity::class,
         SearchUnitFtsEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): PxReaderDao
 }
-

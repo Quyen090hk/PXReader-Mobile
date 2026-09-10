@@ -16,6 +16,7 @@ import java.nio.charset.CodingErrorAction
 import java.util.zip.ZipFile
 
 data class InspectedDocument(val title: String, val author: String?, val chapterCount: Int)
+data class ExtractedCover(val bytes: ByteArray, val extension: String)
 
 object TxtReader {
     private const val CHUNK_SIZE = 9_000
@@ -69,6 +70,24 @@ class EpubBook(private val file: File) {
         chapterCount = packageData.spine.size,
     )
 
+    fun cover(): ExtractedCover? {
+        val coverPath = packageData.coverHref ?: return null
+        val extension = coverPath.substringAfterLast('.', "").lowercase().let { value ->
+            when (value) {
+                "jpeg" -> "jpg"
+                "jpg", "png", "webp" -> value
+                else -> return null
+            }
+        }
+        return runCatching {
+            ZipFile(file).use { zip ->
+                val entry = zip.getEntry(coverPath) ?: return null
+                if (entry.size !in 1..MAX_COVER_BYTES) return null
+                ExtractedCover(zip.getInputStream(entry).use { it.readBytes() }, extension)
+            }
+        }.getOrNull()
+    }
+
     fun chapters(): List<ReaderChapter> = packageData.spine.map { spine ->
         ReaderChapter(
             index = spine.index,
@@ -115,6 +134,7 @@ class EpubBook(private val file: File) {
         val spineIds = mutableListOf<String>()
         var title: String? = null
         var author: String? = null
+        var legacyCoverId: String? = null
         var capture: String? = null
         val opfDir = opfPath.substringBeforeLast('/', "")
         while (parser.next() != XmlPullParser.END_DOCUMENT) {
@@ -132,6 +152,9 @@ class EpubBook(private val file: File) {
                         )
                     }
                     "itemref" -> parser.getAttributeValue(null, "idref")?.let(spineIds::add)
+                    "meta" -> if (parser.getAttributeValue(null, "name")?.equals("cover", ignoreCase = true) == true) {
+                        legacyCoverId = parser.getAttributeValue(null, "content")
+                    }
                 }
                 XmlPullParser.TEXT -> when (capture) {
                     "title" -> if (title.isNullOrBlank()) title = parser.text.trim().takeIf { it.isNotEmpty() }
@@ -147,7 +170,12 @@ class EpubBook(private val file: File) {
         val spine = rawSpine.mapIndexed { index, item ->
             EpubSpineItem(index, item.href, navTitles[item.href] ?: titleFromHtml(zip, item.href) ?: fileName(item.href))
         }
-        return EpubPackage(title, author, spine)
+        val coverHref = manifest.values.firstOrNull { it.properties.split(Regex("\\s+")).contains("cover-image") }?.href
+            ?: legacyCoverId?.let { manifest[it]?.href }
+            ?: manifest.values.firstOrNull { item ->
+                item.mediaType.startsWith("image/") && item.href.substringAfterLast('/').contains("cover", ignoreCase = true)
+            }?.href
+        return EpubPackage(title, author, spine, coverHref)
     }
 
     private fun readNavTitles(
@@ -196,7 +224,11 @@ class EpubBook(private val file: File) {
     }
 
     private data class ManifestItem(val href: String, val mediaType: String, val properties: String)
-    private data class EpubPackage(val title: String?, val author: String?, val spine: List<EpubSpineItem>)
+    private data class EpubPackage(val title: String?, val author: String?, val spine: List<EpubSpineItem>, val coverHref: String?)
+
+    private companion object {
+        const val MAX_COVER_BYTES = 15L * 1024L * 1024L
+    }
 
     private fun localName(name: String) = name.substringAfter(':')
     private fun fileName(path: String) = path.substringAfterLast('/').substringBeforeLast('.').ifBlank { "未命名章节" }
@@ -209,6 +241,10 @@ class DocumentReader(private val documentsDirectory: File) {
             "epub" -> EpubBook(file).inspect()
             else -> error("Unsupported format: $format")
         }
+    }
+
+    suspend fun extractCover(file: File, format: String): ExtractedCover? = withContext(Dispatchers.IO) {
+        if (format.equals("epub", ignoreCase = true)) EpubBook(file).cover() else null
     }
 
     suspend fun open(document: DocumentEntity): List<ReaderChapter> = withContext(Dispatchers.IO) {

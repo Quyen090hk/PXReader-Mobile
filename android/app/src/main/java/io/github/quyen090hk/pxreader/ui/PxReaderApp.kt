@@ -61,6 +61,7 @@ fun PxReaderApp(
                 LibraryRoute(
                     repository = container.readerRepository,
                     importer = container.importer,
+                    scanner = container.scanner,
                     backupExporter = container.backupExporter,
                     incoming = incoming,
                     onIncomingConsumed = onIncomingConsumed,
