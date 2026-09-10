@@ -171,8 +171,8 @@ private fun LibraryScreen(
             item {
                 LibraryHero(
                     documentCount = state.documents.size,
-                    onImport = { picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
                     onScan = { scanDialogVisible = true },
+                    onImport = { picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
                 )
             }
             state.message?.let { message ->
@@ -226,7 +226,12 @@ private fun LibraryScreen(
                 }
             }
             if (visibleDocuments.isEmpty()) {
-                item { EmptyLibrary(onImport = { picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) }) }
+                item {
+                    EmptyLibrary(
+                        onScan = { scanDialogVisible = true },
+                        onImport = { picker.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
+                    )
+                }
             } else {
                 items(visibleDocuments, key = DocumentEntity::id) { document ->
                     DocumentCard(document, onOpen = { onOpenDocument(document.id) }, onEditTags = { editTagsFor = document })
@@ -251,7 +256,7 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun LibraryHero(documentCount: Int, onImport: () -> Unit, onScan: () -> Unit) {
+private fun LibraryHero(documentCount: Int, onScan: () -> Unit, onImport: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
@@ -261,19 +266,19 @@ private fun LibraryHero(documentCount: Int, onImport: () -> Unit, onScan: () -> 
             .padding(22.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("阅读，随时继续。", style = MaterialTheme.typography.displaySmall, color = colors.onPrimaryContainer)
+        Text("从设备发现你的书。", style = MaterialTheme.typography.displaySmall, color = colors.onPrimaryContainer)
         Text(
-            if (documentCount == 0) "导入一本 TXT 或 EPUB，建立你的离线书架。" else "你有 $documentCount 本本地文档，阅读进度已安全保存在设备上。",
+            if (documentCount == 0) "扫描书籍目录或整个设备，把 TXT 与 EPUB 自动整理进离线书架。" else "你有 $documentCount 本本地文档；扫描可持续发现设备中新加入的书。",
             style = MaterialTheme.typography.bodyMedium,
             color = colors.onPrimaryContainer.copy(alpha = 0.82f),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilledTonalButton(onClick = onImport, shape = MaterialTheme.shapes.small) {
+            FilledTonalButton(onClick = onScan, shape = MaterialTheme.shapes.small) {
                 Icon(Icons.Outlined.FolderOpen, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("导入文档")
+                Text("扫描书籍")
             }
-            TextButton(onClick = onScan) { Text("扫描书籍") }
+            TextButton(onClick = onImport) { Text("手动选择文件") }
         }
     }
 }
@@ -295,7 +300,7 @@ private fun ScanDialog(onDismiss: () -> Unit, onScanFolder: () -> Unit, onScanDe
 }
 
 @Composable
-private fun EmptyLibrary(onImport: () -> Unit) {
+private fun EmptyLibrary(onScan: () -> Unit, onImport: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -312,9 +317,10 @@ private fun EmptyLibrary(onImport: () -> Unit) {
             ) {
                 Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
-            Text("书架还是空的", style = MaterialTheme.typography.titleLarge)
-            Text("从文件选择器导入 TXT 或 EPUB。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(onClick = onImport) { Text("选择文件") }
+            Text("还没有发现书籍", style = MaterialTheme.typography.titleLarge)
+            Text("扫描设备或指定书籍目录，PXReader 会自动识别 TXT 与 EPUB。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FilledTonalButton(onClick = onScan) { Text("开始扫描") }
+            TextButton(onClick = onImport) { Text("手动选择文件") }
         }
     }
 }
