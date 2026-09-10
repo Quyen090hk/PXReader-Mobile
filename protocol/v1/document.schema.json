@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pxreader.app/protocol/v1/document.schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "documentId", "format", "title", "originalFileName", "byteSize", "createdAt", "updatedAt"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "documentId": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "format": { "enum": ["txt", "epub"] },
+    "title": { "type": "string", "minLength": 1 },
+    "author": { "type": ["string", "null"] },
+    "originalFileName": { "type": "string", "minLength": 1 },
+    "byteSize": { "type": "integer", "minimum": 0 },
+    "contentHash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
+

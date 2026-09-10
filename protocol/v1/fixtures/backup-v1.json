@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "pxreader-backup",
+  "exportedAt": "2026-09-10T06:00:00Z",
+  "source": "android",
+  "documents": [
+    {
+      "schemaVersion": "1.0.0",
+      "documentId": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "format": "txt",
+      "title": "示例文档",
+      "author": null,
+      "originalFileName": "example.txt",
+      "byteSize": 1024,
+      "contentHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "tags": ["工作"],
+      "createdAt": "2026-09-10T05:30:00Z",
+      "updatedAt": "2026-09-10T05:40:00Z"
+    }
+  ],
+  "positions": [
+    {
+      "schemaVersion": "1.0.0",
+      "documentId": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "locator": {
+        "kind": "text",
+        "chapterIndex": 0,
+        "chapterHref": null,
+        "charStart": 42,
+        "charEnd": 42,
+        "progress": 0.12,
+        "quote": "",
+        "prefix": "前文",
+        "suffix": "后文",
+        "anchor": null
+      },
+      "updatedAt": "2026-09-10T05:40:00Z"
+    }
+  ],
+  "bookmarks": [],
+  "annotations": []
+}

@@ -1,0 +1,241 @@
+package io.github.quyen090hk.pxreader.reader
+
+import android.util.Xml
+import io.github.quyen090hk.pxreader.data.ReaderChapter
+import io.github.quyen090hk.pxreader.data.db.DocumentEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.jsoup.Jsoup
+import org.xmlpull.v1.XmlPullParser
+import java.io.File
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
+import java.util.zip.ZipFile
+
+data class InspectedDocument(val title: String, val author: String?, val chapterCount: Int)
+
+object TxtReader {
+    private const val CHUNK_SIZE = 9_000
+    private val heading = Regex(
+        "(?m)^(第[零〇一二三四五六七八九十百千万\\d]+[章节回卷集部][^\\n]{0,48}|Chapter\\s+\\d+[^\\n]{0,64}|CHAPTER\\s+\\d+[^\\n]{0,64})",
+    )
+
+    fun chapters(file: File): List<ReaderChapter> {
+        val normalized = decode(file).replace("\r\n", "\n").replace('\r', '\n').replace("\u0000", "")
+        val matches = heading.findAll(normalized).toList()
+        if (matches.size >= 2) {
+            return matches.mapIndexed { index, match ->
+                val end = matches.getOrNull(index + 1)?.range?.first ?: normalized.length
+                ReaderChapter(
+                    index = index,
+                    title = match.value.trim(),
+                    href = null,
+                    text = normalized.substring(match.range.first, end).trim(),
+                )
+            }
+        }
+        return normalized.chunked(CHUNK_SIZE).mapIndexed { index, part ->
+            ReaderChapter(index, "片段 ${index + 1}", null, part.trim())
+        }.ifEmpty { listOf(ReaderChapter(0, "正文", null, "")) }
+    }
+
+    private fun decode(file: File): String {
+        val bytes = FileInputStream(file).use { it.readBytes() }
+        val candidates = listOf("UTF-8", "GB18030", "Big5")
+        candidates.forEach { name ->
+            runCatching {
+                Charset.forName(name).newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString()
+            }.getOrNull()?.let { return it }
+        }
+        return bytes.toString(Charsets.UTF_8)
+    }
+}
+
+data class EpubSpineItem(val index: Int, val href: String, val title: String)
+
+class EpubBook(private val file: File) {
+    private val packageData: EpubPackage by lazy { parsePackage() }
+
+    fun inspect(): InspectedDocument = InspectedDocument(
+        title = packageData.title ?: file.nameWithoutExtension,
+        author = packageData.author,
+        chapterCount = packageData.spine.size,
+    )
+
+    fun chapters(): List<ReaderChapter> = packageData.spine.map { spine ->
+        ReaderChapter(
+            index = spine.index,
+            title = spine.title,
+            href = spine.href,
+            text = chapterText(spine.index),
+        )
+    }
+
+    fun chapterHtml(index: Int): String {
+        val item = packageData.spine.getOrNull(index) ?: error("EPUB chapter does not exist")
+        val source = readEntry(item.href) ?: error("EPUB chapter file is missing")
+        return sanitizeHtml(source)
+    }
+
+    fun chapterText(index: Int): String = Jsoup.parse(chapterHtml(index)).text()
+
+    fun chapterHref(index: Int): String? = packageData.spine.getOrNull(index)?.href
+
+    private fun parsePackage(): EpubPackage = ZipFile(file).use { zip ->
+        val containerXml = zip.getEntry("META-INF/container.xml")
+            ?.let { zip.getInputStream(it).bufferedReader().use { reader -> reader.readText() } }
+            ?: error("Invalid EPUB: missing META-INF/container.xml")
+        val opfPath = parseContainer(containerXml) ?: error("Invalid EPUB: missing package rootfile")
+        val opfXml = zip.getEntry(opfPath)
+            ?.let { zip.getInputStream(it).bufferedReader().use { reader -> reader.readText() } }
+            ?: error("Invalid EPUB: missing package document")
+        parseOpf(opfPath, opfXml, zip)
+    }
+
+    private fun parseContainer(xml: String): String? {
+        val parser = Xml.newPullParser().apply { setInput(xml.reader()) }
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            if (parser.eventType == XmlPullParser.START_TAG && localName(parser.name) == "rootfile") {
+                return parser.getAttributeValue(null, "full-path")
+            }
+        }
+        return null
+    }
+
+    private fun parseOpf(opfPath: String, xml: String, zip: ZipFile): EpubPackage {
+        val parser = Xml.newPullParser().apply { setInput(xml.reader()) }
+        val manifest = mutableMapOf<String, ManifestItem>()
+        val spineIds = mutableListOf<String>()
+        var title: String? = null
+        var author: String? = null
+        var capture: String? = null
+        val opfDir = opfPath.substringBeforeLast('/', "")
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            when (parser.eventType) {
+                XmlPullParser.START_TAG -> when (localName(parser.name)) {
+                    "title" -> capture = "title"
+                    "creator" -> capture = "creator"
+                    "item" -> {
+                        val id = parser.getAttributeValue(null, "id") ?: continue
+                        val href = parser.getAttributeValue(null, "href") ?: continue
+                        manifest[id] = ManifestItem(
+                            href = resolvePath(opfDir, href),
+                            mediaType = parser.getAttributeValue(null, "media-type").orEmpty(),
+                            properties = parser.getAttributeValue(null, "properties").orEmpty(),
+                        )
+                    }
+                    "itemref" -> parser.getAttributeValue(null, "idref")?.let(spineIds::add)
+                }
+                XmlPullParser.TEXT -> when (capture) {
+                    "title" -> if (title.isNullOrBlank()) title = parser.text.trim().takeIf { it.isNotEmpty() }
+                    "creator" -> if (author.isNullOrBlank()) author = parser.text.trim().takeIf { it.isNotEmpty() }
+                }
+                XmlPullParser.END_TAG -> if (localName(parser.name) in setOf("title", "creator")) capture = null
+            }
+        }
+        val rawSpine = spineIds.mapNotNull { id -> manifest[id] }
+            .filter { it.mediaType.contains("html", true) || it.href.endsWith(".xhtml", true) || it.href.endsWith(".html", true) }
+        if (rawSpine.isEmpty()) error("Invalid EPUB: package has no readable spine")
+        val navTitles = readNavTitles(manifest.values.firstOrNull { it.properties.split(Regex("\\s+")).contains("nav") }?.href, zip, opfDir, rawSpine)
+        val spine = rawSpine.mapIndexed { index, item ->
+            EpubSpineItem(index, item.href, navTitles[item.href] ?: titleFromHtml(zip, item.href) ?: fileName(item.href))
+        }
+        return EpubPackage(title, author, spine)
+    }
+
+    private fun readNavTitles(
+        navPath: String?,
+        zip: ZipFile,
+        opfDir: String,
+        spine: List<ManifestItem>,
+    ): Map<String, String> {
+        if (navPath == null) return emptyMap()
+        val navHtml = zip.getEntry(navPath)?.let { zip.getInputStream(it).bufferedReader().use { it.readText() } } ?: return emptyMap()
+        val doc = Jsoup.parse(navHtml)
+        val toc = doc.select("nav").firstOrNull { nav ->
+            nav.attributes().any { it.key.endsWith("type") && it.value.split(Regex("\\s+")).contains("toc") }
+        } ?: doc.select("nav").firstOrNull() ?: return emptyMap()
+        return toc.select("a[href]").mapNotNull { anchor ->
+            val full = resolvePath(navPath.substringBeforeLast('/', ""), anchor.attr("href").substringBefore('#'))
+            if (spine.any { it.href == full }) full to anchor.text().trim() else null
+        }.toMap()
+    }
+
+    private fun titleFromHtml(zip: ZipFile, href: String): String? = runCatching {
+        val html = zip.getEntry(href)?.let { zip.getInputStream(it).bufferedReader().use { reader -> reader.readText() } } ?: return null
+        Jsoup.parse(html).selectFirst("h1, h2, h3, title")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    private fun readEntry(path: String): String? = ZipFile(file).use { zip ->
+        zip.getEntry(path)?.let { zip.getInputStream(it).bufferedReader().use { reader -> reader.readText() } }
+    }
+
+    private fun sanitizeHtml(source: String): String {
+        val document = Jsoup.parse(source)
+        document.select("script, iframe, object, embed, base").remove()
+        document.getAllElements().forEach { element ->
+            element.attributes().asList().forEach { attribute ->
+                val key = attribute.key.lowercase()
+                val value = attribute.value.trim().lowercase()
+                if (key.startsWith("on") || (key in setOf("src", "href") && (value.startsWith("http:") || value.startsWith("https:") || value.startsWith("javascript:")))) {
+                    element.removeAttr(attribute.key)
+                }
+            }
+        }
+        document.head().appendElement("style").text(
+            "body{margin:0;padding:1.25rem;line-height:var(--px-line-height,1.7);font-size:var(--px-font-size,1rem);color:var(--px-foreground,#1d1b20);background:var(--px-background,#fffbfe)}img{max-width:100%;height:auto}",
+        )
+        return document.outerHtml()
+    }
+
+    private data class ManifestItem(val href: String, val mediaType: String, val properties: String)
+    private data class EpubPackage(val title: String?, val author: String?, val spine: List<EpubSpineItem>)
+
+    private fun localName(name: String) = name.substringAfter(':')
+    private fun fileName(path: String) = path.substringAfterLast('/').substringBeforeLast('.').ifBlank { "未命名章节" }
+}
+
+class DocumentReader(private val documentsDirectory: File) {
+    suspend fun inspect(file: File, format: String): InspectedDocument = withContext(Dispatchers.IO) {
+        when (format.lowercase()) {
+            "txt" -> TxtReader.chapters(file).let { chapters -> InspectedDocument(file.nameWithoutExtension, null, chapters.size) }
+            "epub" -> EpubBook(file).inspect()
+            else -> error("Unsupported format: $format")
+        }
+    }
+
+    suspend fun open(document: DocumentEntity): List<ReaderChapter> = withContext(Dispatchers.IO) {
+        val file = File(documentsDirectory, document.storedFileName)
+        check(file.isFile) { "The imported source file is missing. Import it again." }
+        when (document.format.lowercase()) {
+            "txt" -> TxtReader.chapters(file)
+            "epub" -> EpubBook(file).chapters()
+            else -> error("Unsupported format: ${document.format}")
+        }
+    }
+
+    suspend fun epubHtml(document: DocumentEntity, chapterIndex: Int): String = withContext(Dispatchers.IO) {
+        val file = File(documentsDirectory, document.storedFileName)
+        EpubBook(file).chapterHtml(chapterIndex)
+    }
+}
+
+private fun resolvePath(baseDir: String, rawPath: String): String {
+    val parts = mutableListOf<String>()
+    (listOf(baseDir) + rawPath.replace('\\', '/')).joinToString("/").split('/').forEach { part ->
+        when (part) {
+            "", "." -> Unit
+            ".." -> if (parts.isNotEmpty()) parts.removeAt(parts.lastIndex)
+            else -> parts += part
+        }
+    }
+    return parts.joinToString("/")
+}
+
