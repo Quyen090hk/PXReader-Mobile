@@ -174,6 +174,24 @@ class ReaderViewModel(
         persistPosition(updated, debounce = true)
     }
 
+    /**
+     * The paged WebView reports the first visible text offset and an optional DOM path.  Keeping
+     * this source anchor rather than a calculated page number makes a font or rotation reflow
+     * return to the same sentence.
+     */
+    fun updateEpubLocation(chapterIndex: Int, charStart: Int, anchor: String?) {
+        val reader = state.value.reader ?: return
+        val current = state.value.locator ?: return
+        // A disposed WebView can still deliver one queued JavaScript callback. Never let a
+        // location measured in the previous chapter overwrite the chapter just opened.
+        if (current.chapterIndex != chapterIndex) return
+        val chapter = reader.chapters.getOrNull(current.chapterIndex) ?: return
+        val updated = locatorFor(chapter, charStart, charStart, reader).copy(anchor = anchor)
+        if (updated.charStart == current.charStart && updated.anchor == current.anchor) return
+        mutableState.update { it.copy(locator = updated) }
+        persistPosition(updated, debounce = true)
+    }
+
     fun previousChapter() {
         val reader = state.value.reader ?: return
         val currentIndex = state.value.locator?.chapterIndex ?: return
