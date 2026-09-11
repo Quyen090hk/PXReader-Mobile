@@ -426,7 +426,7 @@ private fun clockLabel(): String = SimpleDateFormat("HH:mm", Locale.getDefault()
 private fun remainingTimeLabel(chapter: ReaderChapter, locator: TextLocator): String {
     // Chinese reading speed varies widely; 360 characters per minute is a calm, conservative
     // default and intentionally reports an estimate rather than a false-precise countdown.
-    val remainingCharacters = (chapter.text.length - locator.charStart).coerceAtLeast(0)
+    val remainingCharacters = (chapter.contentLength - locator.charStart).coerceAtLeast(0)
     val minutes = (remainingCharacters / 360f).toInt().coerceAtLeast(1)
     return if (minutes < 60) "${minutes} 分钟" else "${minutes / 60} 小时 ${minutes % 60} 分"
 }

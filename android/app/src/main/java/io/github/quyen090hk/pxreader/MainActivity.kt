@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import io.github.quyen090hk.pxreader.ui.screens.warmUpReaderWebView
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -25,6 +26,9 @@ class MainActivity : ComponentActivity() {
                 onIncomingConsumed = { incomingUris.value = emptyList() },
             )
         }
+        // Pay Chromium's one-time startup cost while the user is looking at the library rather
+        // than after they tap a book.
+        window.decorView.postDelayed({ warmUpReaderWebView(applicationContext) }, 250)
     }
 
     override fun onNewIntent(intent: Intent) {

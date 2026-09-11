@@ -34,14 +34,33 @@ class ReaderRepository(context: Context, private val dao: PxReaderDao) {
 
     suspend fun open(documentId: String): ReaderDocument = withContext(Dispatchers.IO) {
         val document = requireNotNull(dao.document(documentId)) { "Document no longer exists." }
-        val chapters = reader.open(document)
+        // EPUB rendering reads only the current spine item. Import already stored the chapter
+        // metadata and character counts, so opening a book must not hydrate its full text body.
+        val indexed = if (document.format.equals("epub", ignoreCase = true)) {
+            dao.indexedChapterSummaries(documentId)
+        } else {
+            emptyList()
+        }
+        val chapters = if (indexed.isNotEmpty() && indexed.size == document.chapterCount) {
+            indexed.map { unit ->
+                ReaderChapter(
+                    index = unit.chapterIndex,
+                    title = unit.title,
+                    href = unit.chapterHref,
+                    text = "",
+                    contentLength = unit.contentLength,
+                )
+            }
+        } else {
+            reader.open(document)
+        }
         dao.markOpened(documentId, System.currentTimeMillis())
         ReaderDocument(document, chapters)
     }
 
-    suspend fun epubHtml(documentId: String, chapterIndex: Int): String = withContext(Dispatchers.IO) {
+    suspend fun epubHtml(documentId: String, chapterIndex: Int, chapterHref: String?): String = withContext(Dispatchers.IO) {
         val document = requireNotNull(dao.document(documentId)) { "Document no longer exists." }
-        reader.epubHtml(document, chapterIndex)
+        reader.epubHtml(document, chapterIndex, chapterHref)
     }
 
     suspend fun position(documentId: String): TextLocator? = dao.position(documentId)?.toLocator()

@@ -190,6 +190,16 @@ private fun ReaderWebView(
     val codeBackground = colors.surfaceVariant.toCssHex()
     val outline = colors.outline.toCssHex()
     val darkTheme = colors.surface.luminance() < 0.5f
+    val themePayload = readerTheme(
+        settings = settings,
+        foreground = foreground,
+        background = background,
+        mutedForeground = mutedForeground,
+        accent = accent,
+        codeBackground = codeBackground,
+        outline = outline,
+        darkTheme = darkTheme,
+    )
     AndroidView(
         factory = {
             val loader = source?.let { file ->
@@ -226,7 +236,7 @@ private fun ReaderWebView(
                         // Reset it before the column geometry is created, then restore the source
                         // locator after layout has a measurable first text node.
                         readerView.scrollTo(0, 0)
-                        readerView.postDelayed({
+                        readerView.post {
                             readerView.evaluateJavascript(BRIDGE_SCRIPT, null)
                             readerView.evaluateJavascript(readerView.themeScript, null)
                             readerView.appliedThemeScript = readerView.themeScript
@@ -235,7 +245,7 @@ private fun ReaderWebView(
                                 "window.PXReaderLayout && window.PXReaderLayout.restore(${readerView.restoreCharOffset}, ${JSONObject.quote(readerView.restoreAnchor ?: "")});",
                                 null,
                             )
-                        }, 48)
+                        }
                     }
                 }
             }
@@ -245,16 +255,7 @@ private fun ReaderWebView(
             view.setBackgroundColor(backgroundArgb)
             view.restoreCharOffset = locator.charStart.coerceAtLeast(0)
             view.restoreAnchor = locator.anchor
-            view.themeScript = themeScript(
-                settings = settings,
-                foreground = foreground,
-                background = background,
-                mutedForeground = mutedForeground,
-                accent = accent,
-                codeBackground = codeBackground,
-                outline = outline,
-                darkTheme = darkTheme,
-            )
+            view.themeScript = themePayload.script
             view.highlightScript = highlightScript(annotations)
             val contentKey = "$documentId:${chapter.index}"
             if (view.loadedContentKey != contentKey) {
@@ -264,7 +265,7 @@ private fun ReaderWebView(
                 val baseUrl = source?.let {
                     "https://appassets.androidplatform.net/epub/$documentId/${chapter.href.orEmpty()}"
                 } ?: "https://appassets.androidplatform.net/text/$documentId/${chapter.index}.html"
-                view.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
+                view.loadDataWithBaseURL(baseUrl, initialReaderHtml(html, themePayload), "text/html", "utf-8", null)
             } else {
                 val themeChanged = view.appliedThemeScript != view.themeScript
                 if (themeChanged) {
@@ -525,7 +526,21 @@ private class EpubZipPathHandler(
     }
 }
 
-private fun themeScript(
+private data class ReaderTheme(val mode: String, val css: String) {
+    val script: String = """
+        (() => {
+          const viewport = window.visualViewport;
+          document.documentElement.style.setProperty('--px-page-height', Math.max(1, Math.round((viewport && viewport.height) || window.innerHeight)) + 'px');
+          let style = document.getElementById('px-reader-theme');
+          if (!style) { style = document.createElement('style'); style.id = 'px-reader-theme'; document.head.appendChild(style); }
+          style.textContent = ${JSONObject.quote(css)};
+          document.documentElement.classList.remove('px-paged','px-scroll');
+          document.documentElement.classList.add('px-$mode');
+        })();
+    """.trimIndent()
+}
+
+private fun readerTheme(
     settings: ReaderSettings,
     foreground: String,
     background: String,
@@ -534,7 +549,7 @@ private fun themeScript(
     codeBackground: String,
     outline: String,
     darkTheme: Boolean,
-): String {
+): ReaderTheme {
     val mode = if (settings.readingMode.name == "PAGED") "paged" else "scroll"
     val font = if (settings.readerFont.name == "SERIF") {
         "'Noto Serif CJK SC','Source Han Serif SC','Noto Serif',serif"
@@ -572,18 +587,24 @@ private fun themeScript(
         html.px-scroll{overflow-x:hidden;overflow-y:auto;scroll-behavior:smooth}
         html.px-scroll body{max-width:46rem !important;margin:auto !important;padding:var(--px-content-inset) !important}
     """.trimIndent().replace("\n", " ")
-    return """
-        (() => {
-          const viewport = window.visualViewport;
-          document.documentElement.style.setProperty('--px-page-height', Math.max(1, Math.round((viewport && viewport.height) || window.innerHeight)) + 'px');
-          let style = document.getElementById('px-reader-theme');
-          if (!style) { style = document.createElement('style'); style.id = 'px-reader-theme'; document.head.appendChild(style); }
-          style.textContent = ${JSONObject.quote(css)};
-          document.documentElement.classList.remove('px-paged','px-scroll');
-          document.documentElement.classList.add('px-$mode');
-        })();
-    """.trimIndent()
+    return ReaderTheme(mode, css)
 }
+
+private fun initialReaderHtml(html: String, theme: ReaderTheme): String {
+    val safeCss = theme.css.replace("</style", "<\\/style", ignoreCase = true)
+    val bootstrap = buildString(safeCss.length + 180) {
+        append("<style id=\"px-reader-theme\">")
+        append(safeCss)
+        append("</style><script>document.documentElement.classList.remove('px-paged','px-scroll');")
+        append("document.documentElement.classList.add('px-")
+        append(theme.mode)
+        append("');</script>")
+    }
+    val head = HEAD_TAG.find(html) ?: return bootstrap + html
+    return html.substring(0, head.range.last + 1) + bootstrap + html.substring(head.range.last + 1)
+}
+
+private val HEAD_TAG = Regex("<head(?:\\s[^>]*)?>", RegexOption.IGNORE_CASE)
 
 private fun Color.toCssHex(): String = "#%06X".format(toArgb() and 0xFFFFFF)
 

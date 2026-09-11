@@ -167,7 +167,7 @@ class ReaderViewModel(
         val reader = state.value.reader ?: return
         val current = state.value.locator ?: return
         val chapter = reader.chapters.getOrNull(current.chapterIndex) ?: return
-        val char = (chapter.text.length * fractionInChapter.coerceIn(0f, 1f)).roundToInt()
+        val char = (chapter.contentLength * fractionInChapter.coerceIn(0f, 1f)).roundToInt()
         val updated = locatorFor(chapter, char, char, reader)
         if (updated.charStart == current.charStart && updated.chapterIndex == current.chapterIndex) return
         mutableState.update { it.copy(locator = updated) }
@@ -218,7 +218,7 @@ class ReaderViewModel(
         val chapterIndex = scaled.toInt().coerceIn(0, reader.chapters.lastIndex)
         val fractionInChapter = (scaled - chapterIndex).coerceIn(0f, 1f)
         val chapter = reader.chapters[chapterIndex]
-        val char = (chapter.text.length * fractionInChapter).roundToInt()
+        val char = (chapter.contentLength * fractionInChapter).roundToInt()
         navigateTo(locatorFor(chapter, char, char, reader))
     }
 
@@ -276,7 +276,10 @@ class ReaderViewModel(
         mutableState.update { it.copy(searching = false, searchHits = hits) }
     }
 
-    suspend fun epubHtml(chapterIndex: Int): String = repository.epubHtml(documentId, chapterIndex)
+    suspend fun epubHtml(chapterIndex: Int): String {
+        val href = state.value.reader?.chapters?.getOrNull(chapterIndex)?.href
+        return repository.epubHtml(documentId, chapterIndex, href)
+    }
 
     private fun persistPosition(locator: TextLocator, debounce: Boolean = false) {
         positionSaveJob?.cancel()
@@ -297,14 +300,17 @@ class ReaderViewModel(
     }
 
     private fun locatorFor(chapter: ReaderChapter, rawStart: Int, rawEnd: Int, reader: ReaderDocument): TextLocator {
-        val start = rawStart.coerceIn(0, chapter.text.length)
-        val end = rawEnd.coerceIn(start, chapter.text.length)
-        val quote = chapter.text.substring(start, end)
+        val hasText = chapter.text.isNotEmpty() || !reader.document.format.equals("epub", ignoreCase = true)
+        val start = if (hasText) rawStart.coerceIn(0, chapter.text.length) else rawStart.coerceAtLeast(0)
+        val end = if (hasText) rawEnd.coerceIn(start, chapter.text.length) else rawEnd.coerceAtLeast(start)
+        val quote = if (hasText) chapter.text.substring(start, end) else ""
         val prefixStart = (start - 48).coerceAtLeast(0)
-        val suffixEnd = (end + 48).coerceAtMost(chapter.text.length)
-        val fraction = if (chapter.text.isEmpty()) 0f else start.toFloat() / chapter.text.length
+        val suffixEnd = (end + 48).coerceAtMost(chapter.contentLength)
+        val fraction = if (chapter.contentLength == 0) 0f else (start.toFloat() / chapter.contentLength).coerceIn(0f, 1f)
         val progress = ((chapter.index + fraction) / reader.chapters.size.coerceAtLeast(1)).coerceIn(0f, 1f)
-        return TextLocator(chapter.index, chapter.href, start, end, progress, quote, chapter.text.substring(prefixStart, start), chapter.text.substring(end, suffixEnd))
+        val prefix = if (hasText) chapter.text.substring(prefixStart, start) else ""
+        val suffix = if (hasText) chapter.text.substring(end, suffixEnd) else ""
+        return TextLocator(chapter.index, chapter.href, start, end, progress, quote, prefix, suffix)
     }
 }
 

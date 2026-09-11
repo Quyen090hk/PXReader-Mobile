@@ -98,6 +98,13 @@ data class SearchUnitEntity(
     val body: String,
 )
 
+data class IndexedChapterSummary(
+    val chapterIndex: Int,
+    val chapterHref: String?,
+    val title: String,
+    val contentLength: Int,
+)
+
 @Fts4
 @Entity(tableName = "search_units_fts")
 data class SearchUnitFtsEntity(val body: String)
@@ -166,6 +173,9 @@ interface PxReaderDao {
 
     @Query("DELETE FROM search_units WHERE documentId = :documentId")
     suspend fun deleteSearchUnitsForDocument(documentId: String)
+
+    @Query("SELECT chapterIndex, chapterHref, title, length(body) AS contentLength FROM search_units WHERE documentId = :documentId ORDER BY chapterIndex")
+    suspend fun indexedChapterSummaries(documentId: String): List<IndexedChapterSummary>
 
     @Query("""
         SELECT u.* FROM search_units u

@@ -35,6 +35,7 @@ data class ReaderChapter(
     val title: String,
     val href: String?,
     val text: String,
+    val contentLength: Int = text.length,
 )
 
 data class ReaderDocument(

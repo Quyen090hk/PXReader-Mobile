@@ -15,6 +15,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
+import java.util.LinkedHashMap
 import java.util.zip.ZipFile
 
 data class InspectedDocument(val title: String, val author: String?, val chapterCount: Int)
@@ -65,6 +66,9 @@ data class EpubSpineItem(val index: Int, val href: String, val title: String)
 
 class EpubBook(private val file: File) {
     private val packageData: EpubPackage by lazy { parsePackage() }
+    private val chapterHtmlCache = object : LinkedHashMap<String, String>(HTML_CACHE_SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > HTML_CACHE_SIZE
+    }
 
     fun inspect(): InspectedDocument = InspectedDocument(
         title = packageData.title ?: file.nameWithoutExtension,
@@ -99,10 +103,15 @@ class EpubBook(private val file: File) {
         )
     }
 
-    fun chapterHtml(index: Int): String {
-        val item = packageData.spine.getOrNull(index) ?: error("EPUB chapter does not exist")
-        val source = readEntry(item.href) ?: error("EPUB chapter file is missing")
-        return sanitizeHtml(source)
+    fun chapterHtml(index: Int, knownHref: String? = null): String {
+        // The local index already knows the spine href. Using it avoids reparsing the OPF and
+        // table of contents before the first visible chapter can be rendered.
+        val href = knownHref ?: packageData.spine.getOrNull(index)?.href ?: error("EPUB chapter does not exist")
+        synchronized(chapterHtmlCache) { chapterHtmlCache[href] }?.let { return it }
+        val source = readEntry(href) ?: error("EPUB chapter file is missing")
+        return sanitizeHtml(source).also { sanitized ->
+            synchronized(chapterHtmlCache) { chapterHtmlCache[href] = sanitized }
+        }
     }
 
     fun chapterText(index: Int): String = Jsoup.parse(chapterHtml(index)).text()
@@ -293,6 +302,7 @@ class EpubBook(private val file: File) {
 
     private companion object {
         const val MAX_COVER_BYTES = 15L * 1024L * 1024L
+        const val HTML_CACHE_SIZE = 12
     }
 
     private fun localName(name: String) = name.substringAfter(':')
@@ -300,16 +310,20 @@ class EpubBook(private val file: File) {
 }
 
 class DocumentReader(private val documentsDirectory: File) {
+    private val epubCache = object : LinkedHashMap<String, CachedEpub>(EPUB_CACHE_SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedEpub>?): Boolean = size > EPUB_CACHE_SIZE
+    }
+
     suspend fun inspect(file: File, format: String): InspectedDocument = withContext(Dispatchers.IO) {
         when (format.lowercase()) {
             "txt" -> TxtReader.chapters(file).let { chapters -> InspectedDocument(file.nameWithoutExtension, null, chapters.size) }
-            "epub" -> EpubBook(file).inspect()
+            "epub" -> epub(file).inspect()
             else -> error("Unsupported format: $format")
         }
     }
 
     suspend fun extractCover(file: File, format: String): ExtractedCover? = withContext(Dispatchers.IO) {
-        if (format.equals("epub", ignoreCase = true)) EpubBook(file).cover() else null
+        if (format.equals("epub", ignoreCase = true)) epub(file).cover() else null
     }
 
     suspend fun open(document: DocumentEntity): List<ReaderChapter> = withContext(Dispatchers.IO) {
@@ -317,14 +331,27 @@ class DocumentReader(private val documentsDirectory: File) {
         check(file.isFile) { "The imported source file is missing. Import it again." }
         when (document.format.lowercase()) {
             "txt" -> TxtReader.chapters(file)
-            "epub" -> EpubBook(file).chapters()
+            "epub" -> epub(file).chapters()
             else -> error("Unsupported format: ${document.format}")
         }
     }
 
-    suspend fun epubHtml(document: DocumentEntity, chapterIndex: Int): String = withContext(Dispatchers.IO) {
+    suspend fun epubHtml(document: DocumentEntity, chapterIndex: Int, chapterHref: String?): String = withContext(Dispatchers.IO) {
         val file = File(documentsDirectory, document.storedFileName)
-        EpubBook(file).chapterHtml(chapterIndex)
+        epub(file).chapterHtml(chapterIndex, chapterHref)
+    }
+
+    private fun epub(file: File): EpubBook = synchronized(epubCache) {
+        val key = file.absolutePath
+        val signature = "${file.length()}:${file.lastModified()}"
+        epubCache[key]?.takeIf { it.signature == signature }?.book
+            ?: EpubBook(file).also { book -> epubCache[key] = CachedEpub(signature, book) }
+    }
+
+    private data class CachedEpub(val signature: String, val book: EpubBook)
+
+    private companion object {
+        const val EPUB_CACHE_SIZE = 3
     }
 }
 
