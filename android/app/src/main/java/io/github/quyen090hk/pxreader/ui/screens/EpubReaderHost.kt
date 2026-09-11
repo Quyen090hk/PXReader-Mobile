@@ -26,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -180,8 +181,15 @@ private fun ReaderWebView(
     modifier: Modifier,
 ) {
     val context = LocalContext.current
-    val foreground = MaterialTheme.colorScheme.onSurface.toCssHex()
-    val background = MaterialTheme.colorScheme.surface.toCssHex()
+    val colors = MaterialTheme.colorScheme
+    val foreground = colors.onSurface.toCssHex()
+    val background = colors.surface.toCssHex()
+    val backgroundArgb = colors.surface.toArgb()
+    val mutedForeground = colors.onSurfaceVariant.toCssHex()
+    val accent = colors.primary.toCssHex()
+    val codeBackground = colors.surfaceVariant.toCssHex()
+    val outline = colors.outline.toCssHex()
+    val darkTheme = colors.surface.luminance() < 0.5f
     AndroidView(
         factory = {
             val loader = source?.let { file ->
@@ -234,9 +242,19 @@ private fun ReaderWebView(
         },
         update = { view ->
             view.pagedMode = settings.readingMode.name == "PAGED"
+            view.setBackgroundColor(backgroundArgb)
             view.restoreCharOffset = locator.charStart.coerceAtLeast(0)
             view.restoreAnchor = locator.anchor
-            view.themeScript = themeScript(settings, foreground, background)
+            view.themeScript = themeScript(
+                settings = settings,
+                foreground = foreground,
+                background = background,
+                mutedForeground = mutedForeground,
+                accent = accent,
+                codeBackground = codeBackground,
+                outline = outline,
+                darkTheme = darkTheme,
+            )
             view.highlightScript = highlightScript(annotations)
             val contentKey = "$documentId:${chapter.index}"
             if (view.loadedContentKey != contentKey) {
@@ -507,7 +525,16 @@ private class EpubZipPathHandler(
     }
 }
 
-private fun themeScript(settings: ReaderSettings, foreground: String, background: String): String {
+private fun themeScript(
+    settings: ReaderSettings,
+    foreground: String,
+    background: String,
+    mutedForeground: String,
+    accent: String,
+    codeBackground: String,
+    outline: String,
+    darkTheme: Boolean,
+): String {
     val mode = if (settings.readingMode.name == "PAGED") "paged" else "scroll"
     val font = if (settings.readerFont.name == "SERIF") {
         "'Noto Serif CJK SC','Source Han Serif SC','Noto Serif',serif"
@@ -516,17 +543,27 @@ private fun themeScript(settings: ReaderSettings, foreground: String, background
     }
     val align = if (settings.justified) "justify" else "start"
     val indent = if (settings.firstLineIndent) "2em" else "0"
+    val colorScheme = if (darkTheme) "dark" else "light"
+    val annotationYellow = if (darkTheme) "#5A500F" else "#FFF59D"
+    val annotationGreen = if (darkTheme) "#174D32" else "#CAEECE"
+    val annotationBlue = if (darkTheme) "#1E4267" else "#BBDEFB"
+    val annotationPink = if (darkTheme) "#613249" else "#F8BBD0"
+    val annotationOrange = if (darkTheme) "#643B20" else "#FFE0B2"
     val css = """
-        :root{color-scheme:light;background:$background;color:$foreground;--px-content-inset:1em}
-        html,body{margin:0;min-height:100%;background:$background;color:$foreground}
+        :root{color-scheme:$colorScheme;background:$background;color:$foreground;--px-content-inset:1em;--px-foreground:$foreground;--px-muted:$mutedForeground;--px-accent:$accent;--px-code-background:$codeBackground;--px-outline:$outline;--px-annotation-yellow:$annotationYellow;--px-annotation-green:$annotationGreen;--px-annotation-blue:$annotationBlue;--px-annotation-pink:$annotationPink;--px-annotation-orange:$annotationOrange}
+        html,body{margin:0;min-height:100%;background:$background !important;color:$foreground !important}
         body{box-sizing:border-box;width:100vw !important;min-width:100vw !important;max-width:none !important;padding:0 !important;font-family:$font !important;font-size:${settings.fontScale}rem !important;line-height:${settings.lineHeight} !important;letter-spacing:${settings.letterSpacing}em !important;font-kerning:normal;font-variant-east-asian:proportional-width;line-break:strict;word-break:normal;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;text-autospace:normal}
+        body *{color:inherit !important}
+        body :where(p,div,span,section,article,header,footer,main,aside,li,blockquote,h1,h2,h3,h4,h5,h6,table,thead,tbody,tfoot,tr,td,th,pre,code){background-color:transparent !important}
+        a,a:link,a:visited{color:var(--px-accent) !important;text-decoration-color:color-mix(in srgb,var(--px-accent) 55%,transparent)}
+        small,figcaption,caption,rt{color:var(--px-muted) !important}
         p,li,blockquote{text-align:$align;text-justify:inter-ideograph}
         p{margin:0 0 ${settings.paragraphSpacing}em;text-indent:$indent}
         p:empty{min-height:${settings.paragraphSpacing}em}
         h1,h2,h3,h4,h5,h6{line-height:1.32;break-after:avoid;break-inside:avoid;margin:1.65em 0 .72em;text-indent:0}
-        blockquote{margin:1em 0;padding-left:1em;border-left:3px solid color-mix(in srgb,$foreground 18%,transparent);text-indent:0}
+        blockquote{margin:1em 0;padding-left:1em;border-left:3px solid var(--px-outline);text-indent:0}
         img,svg,video,canvas{max-width:100% !important;max-inline-size:100% !important;height:auto !important;object-fit:contain}
-        table{max-width:100% !important;display:block;overflow:auto} pre{white-space:pre-wrap;word-break:break-word;tab-size:2} code{font-family:monospace;font-size:.9em}
+        table{max-width:100% !important;display:block;overflow:auto} th,td{border-color:var(--px-outline) !important} hr{border:0;border-top:1px solid var(--px-outline)} pre{white-space:pre-wrap;word-break:break-word;tab-size:2;background:var(--px-code-background) !important;border:1px solid var(--px-outline);border-radius:.55em;padding:.75em} code{font-family:monospace;font-size:.9em} :not(pre)>code{background:var(--px-code-background) !important;border-radius:.28em;padding:.08em .28em}
         ruby{ruby-position:over} rt{font-size:.52em;letter-spacing:0} mark[data-px-annotation-id]{color:inherit;border-radius:.16em;padding:0 .03em}
         html.px-paged{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;overflow:hidden !important;scroll-behavior:auto;overscroll-behavior:none;touch-action:pan-x}
         html.px-paged body{height:var(--px-page-height,100vh) !important;min-height:var(--px-page-height,100vh) !important;max-height:var(--px-page-height,100vh) !important;padding:var(--px-content-inset) !important;column-width:calc(100vw - 2em);column-gap:2em;column-fill:auto;overflow:visible;overscroll-behavior:none;touch-action:pan-x}
@@ -760,7 +797,7 @@ private const val BRIDGE_SCRIPT = """
       animateToPage(Math.round(window.scrollX / width) + Math.sign(delta), 0);
     },
   };
-  const annotationColor = (color) => color === 'green' ? '#caeece' : color === 'blue' ? '#bbdefb' : color === 'pink' ? '#f8bbd0' : color === 'orange' ? '#ffe0b2' : '#fff59d';
+  const annotationColor = (color) => color === 'green' ? 'var(--px-annotation-green)' : color === 'blue' ? 'var(--px-annotation-blue)' : color === 'pink' ? 'var(--px-annotation-pink)' : color === 'orange' ? 'var(--px-annotation-orange)' : 'var(--px-annotation-yellow)';
   const markRange = (start, end, color, id) => {
     if (end <= start) return;
     const nodes = []; let current, tree = walker();
