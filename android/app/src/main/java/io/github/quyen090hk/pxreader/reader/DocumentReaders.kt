@@ -326,13 +326,15 @@ class DocumentReader(private val documentsDirectory: File) {
         if (format.equals("epub", ignoreCase = true)) epub(file).cover() else null
     }
 
-    suspend fun open(document: DocumentEntity): List<ReaderChapter> = withContext(Dispatchers.IO) {
-        val file = File(documentsDirectory, document.storedFileName)
+    suspend fun open(document: DocumentEntity): List<ReaderChapter> =
+        openFile(File(documentsDirectory, document.storedFileName), document.format)
+
+    suspend fun openFile(file: File, format: String): List<ReaderChapter> = withContext(Dispatchers.IO) {
         check(file.isFile) { "The imported source file is missing. Import it again." }
-        when (document.format.lowercase()) {
+        when (format.lowercase()) {
             "txt" -> TxtReader.chapters(file)
             "epub" -> epub(file).chapters()
-            else -> error("Unsupported format: ${document.format}")
+            else -> error("Unsupported format: $format")
         }
     }
 

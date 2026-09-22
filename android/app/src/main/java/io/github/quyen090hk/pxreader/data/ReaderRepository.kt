@@ -154,19 +154,6 @@ class ReaderRepository(context: Context, private val dao: PxReaderDao) {
         List(value.length()) { value.getString(it) }
     }.getOrDefault(emptyList())
 
-    suspend fun index(document: DocumentEntity) = withContext(Dispatchers.Default) {
-        val units = reader.open(document).map { chapter ->
-            SearchUnitEntity(
-                documentId = document.id,
-                chapterIndex = chapter.index,
-                chapterHref = chapter.href,
-                title = chapter.title,
-                body = chapter.text,
-            )
-        }
-        dao.replaceSearchUnits(document.id, units)
-    }
-
     suspend fun search(documentId: String, query: String): List<SearchHit> = withContext(Dispatchers.Default) {
         val needle = query.trim()
         if (needle.isEmpty()) return@withContext emptyList()

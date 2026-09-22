@@ -2,6 +2,7 @@ package io.github.quyen090hk.pxreader.ui.screens
 
 import android.net.Uri
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.provider.Settings
@@ -66,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +93,7 @@ import org.json.JSONArray
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import java.util.LinkedHashMap
 
 @Composable
 fun LibraryRoute(
@@ -566,12 +569,13 @@ private fun DocumentCard(document: DocumentEntity, onOpen: () -> Unit, onEditTag
 @Composable
 private fun CoverThumbnail(document: DocumentEntity, fallbackColor: androidx.compose.ui.graphics.Color, fallbackContentColor: androidx.compose.ui.graphics.Color) {
     val context = LocalContext.current
-    val bitmap by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, document.coverFileName) {
+    val targetPx = with(LocalDensity.current) { 50.dp.roundToPx() }
+    val bitmap by androidx.compose.runtime.produceState<Bitmap?>(initialValue = null, document.coverFileName, targetPx) {
         value = withContext(Dispatchers.IO) {
             document.coverFileName
                 ?.let { File(context.filesDir, "covers/$it") }
                 ?.takeIf(File::isFile)
-                ?.let { file -> BitmapFactory.decodeFile(file.absolutePath) }
+                ?.let { file -> CoverThumbnailCache.load(file, targetPx) }
         }
     }
     if (bitmap == null) {
@@ -588,6 +592,32 @@ private fun CoverThumbnail(document: DocumentEntity, fallbackColor: androidx.com
             contentScale = ContentScale.Crop,
             modifier = Modifier.size(50.dp).clip(MaterialTheme.shapes.small),
         )
+    }
+}
+
+private object CoverThumbnailCache {
+    private const val MAX_ENTRIES = 48
+    private val cache = object : LinkedHashMap<String, Bitmap>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean = size > MAX_ENTRIES
+    }
+
+    fun load(file: File, targetPx: Int): Bitmap? {
+        val key = "${file.absolutePath}:${file.length()}:${file.lastModified()}:$targetPx"
+        synchronized(cache) { cache[key] }?.let { return it }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        val maxDimension = targetPx.coerceAtLeast(1) * 2
+        while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) {
+            sample *= 2
+        }
+        val bitmap = BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: return null
+        synchronized(cache) { cache[key] = bitmap }
+        return bitmap
     }
 }
 

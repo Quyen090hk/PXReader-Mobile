@@ -126,6 +126,12 @@ interface PxReaderDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertDocument(document: DocumentEntity)
 
+    @Transaction
+    suspend fun commitImportedDocument(document: DocumentEntity, units: List<SearchUnitEntity>) {
+        upsertDocument(document)
+        replaceSearchUnits(document.id, units)
+    }
+
     @Query("UPDATE documents SET lastOpenedAt = :time, updatedAt = :time WHERE id = :documentId")
     suspend fun markOpened(documentId: String, time: Long)
 

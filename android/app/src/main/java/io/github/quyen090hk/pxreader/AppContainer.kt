@@ -20,7 +20,7 @@ class AppContainer(context: Context) {
     ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
 
     val readerRepository = ReaderRepository(applicationContext, database.dao())
-    val importer = DocumentImporter(applicationContext, database.dao(), readerRepository)
+    val importer = DocumentImporter(applicationContext, database.dao())
     val scanner = DocumentScanner(applicationContext, importer)
     val settings = SettingsRepository(applicationContext)
     val backupExporter = BackupExporter(applicationContext, database.dao())
