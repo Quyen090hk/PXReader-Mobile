@@ -239,7 +239,8 @@ class ReaderViewModel(
     }
 
     fun persistCurrentPosition() {
-        state.value.locator?.let(::persistPosition)
+        positionSaveJob?.cancel()
+        state.value.locator?.let { repository.enqueuePositionSave(documentId, it) }
     }
 
     fun selectText(start: Int, end: Int) {

@@ -14,15 +14,20 @@ import androidx.compose.material.icons.outlined.FormatSize
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -41,7 +46,6 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -99,7 +103,7 @@ fun ReaderRoute(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(model, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) model.persistCurrentPosition()
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) model.persistCurrentPosition()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
@@ -205,19 +209,9 @@ private fun ReaderScreen(
     ) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
-            // In distraction-free mode, the reader owns every pixel. The controls get normal
-            // system-bar insets again as soon as the user taps the centre zone.
-            contentWindowInsets = if (chromeVisible) ScaffoldDefaults.contentWindowInsets else WindowInsets(0, 0, 0, 0),
-            topBar = {
-                if (chromeVisible) {
-                    CenterAlignedTopAppBar(
-                        title = { Text(reader?.document?.title ?: "PXReader", maxLines = 1) },
-                        navigationIcon = {
-                            IconButton(onClick = { model.persistCurrentPosition(); onBack() }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回书架") }
-                        },
-                    )
-                }
-            },
+            // Reader geometry must stay fixed when the temporary controls appear. Resizing the
+            // WebView repaginates the book and can silently save an earlier first-visible line.
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
         ) { padding ->
             when {
                 state.loading -> Column(Modifier.fillMaxSize().padding(padding), verticalArrangement = Arrangement.Center, horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
@@ -226,8 +220,8 @@ private fun ReaderScreen(
                 state.error != null -> Column(Modifier.fillMaxSize().padding(padding).padding(24.dp)) { Text(state.error, color = MaterialTheme.colorScheme.error) }
                 reader != null && state.locator != null -> {
                     val chapter = reader.chapters.getOrNull(state.locator.chapterIndex) ?: reader.chapters.first()
-                    Column(Modifier.fillMaxSize().padding(padding)) {
-                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                    Box(Modifier.fillMaxSize().padding(padding)) {
+                        Box(Modifier.fillMaxSize()) {
                             if (reader.format == DocumentFormat.TXT) {
                                 TxtReaderHost(
                                     documentId = reader.document.id,
@@ -285,10 +279,21 @@ private fun ReaderScreen(
                             }
                         }
                         if (chromeVisible) {
+                            Box(
+                                Modifier.align(Alignment.TopCenter).fillMaxWidth()
+                                    .height(WindowInsets.statusBars.asPaddingValues().calculateTopPadding())
+                                    .background(MaterialTheme.colorScheme.surface),
+                            )
+                            Box(
+                                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                                    .height(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
+                                    .background(MaterialTheme.colorScheme.surface),
+                            )
                             Surface(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                                    .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
                                 shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                                color = MaterialTheme.colorScheme.surface,
                             ) {
                                 Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -320,6 +325,19 @@ private fun ReaderScreen(
                                     }
                                 }
                             }
+                        }
+                        if (chromeVisible) {
+                            CenterAlignedTopAppBar(
+                                title = { Text(reader.document.title, maxLines = 1) },
+                                windowInsets = WindowInsets(0, 0, 0, 0),
+                                navigationIcon = {
+                                    IconButton(onClick = { model.persistCurrentPosition(); onBack() }) {
+                                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回书架")
+                                    }
+                                },
+                                modifier = Modifier.align(Alignment.TopCenter)
+                                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()),
+                            )
                         }
                     }
                 }

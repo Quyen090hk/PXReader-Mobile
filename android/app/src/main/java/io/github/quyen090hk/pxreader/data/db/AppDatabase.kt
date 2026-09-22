@@ -1,6 +1,7 @@
 package io.github.quyen090hk.pxreader.data.db
 
 import androidx.room.Dao
+import androidx.room.ColumnInfo
 import androidx.room.Database
 import androidx.room.Entity
 import androidx.room.Fts4
@@ -96,6 +97,8 @@ data class SearchUnitEntity(
     val chapterHref: String?,
     val title: String,
     val body: String,
+    @ColumnInfo(defaultValue = "0")
+    val contentLength: Int = body.length,
 )
 
 data class IndexedChapterSummary(
@@ -174,7 +177,7 @@ interface PxReaderDao {
     @Query("DELETE FROM search_units WHERE documentId = :documentId")
     suspend fun deleteSearchUnitsForDocument(documentId: String)
 
-    @Query("SELECT chapterIndex, chapterHref, title, length(body) AS contentLength FROM search_units WHERE documentId = :documentId ORDER BY chapterIndex")
+    @Query("SELECT chapterIndex, chapterHref, title, CASE WHEN contentLength > 0 THEN contentLength ELSE length(body) END AS contentLength FROM search_units WHERE documentId = :documentId ORDER BY chapterIndex")
     suspend fun indexedChapterSummaries(documentId: String): List<IndexedChapterSummary>
 
     @Query("""
@@ -212,7 +215,7 @@ interface PxReaderDao {
         SearchUnitEntity::class,
         SearchUnitFtsEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -35,6 +35,7 @@ import io.github.quyen090hk.pxreader.data.ReaderChapter
 import io.github.quyen090hk.pxreader.data.TextLocator
 import io.github.quyen090hk.pxreader.data.db.AnnotationEntity
 import io.github.quyen090hk.pxreader.settings.ReaderSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -64,16 +65,21 @@ fun EpubReaderHost(
     modifier: Modifier,
 ) {
     var html by remember(documentId, chapter.index) { mutableStateOf<String?>(null) }
+    var loadError by remember(documentId, chapter.index) { mutableStateOf<String?>(null) }
     LaunchedEffect(documentId, chapter.index) {
         html = try {
             onRequestHtml(chapter.index)
-        } catch (_: Exception) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            loadError = error.message ?: "此章节无法打开。"
             null
         }
     }
     if (html == null) {
         androidx.compose.foundation.layout.Box(modifier, contentAlignment = androidx.compose.ui.Alignment.Center) {
-            androidx.compose.material3.CircularProgressIndicator()
+            if (loadError == null) androidx.compose.material3.CircularProgressIndicator()
+            else androidx.compose.material3.Text(loadError ?: "此章节无法打开。", color = MaterialTheme.colorScheme.error)
         }
         return
     }
@@ -144,7 +150,7 @@ private fun ReaderWebHost(
     modifier: Modifier,
 ) {
     val chapterAnnotations = annotations.filter { it.chapterIndex == chapter.index }
-    key("$documentId:${chapter.index}:${chapterAnnotations.joinToString { it.id + it.updatedAt }}") {
+    key("$documentId:${chapter.index}") {
         ReaderWebView(
             source = source,
             documentId = documentId,
@@ -220,10 +226,8 @@ private fun ReaderWebView(
                 isVerticalScrollBarEnabled = false
                 isHorizontalScrollBarEnabled = false
                 overScrollMode = WebView.OVER_SCROLL_NEVER
-                addJavascriptInterface(
-                    ReaderBridge(chapter.index, onSelection, onLocation, onToggleChrome, onFootnote),
-                    "PXReaderBridge",
-                )
+                readerBridge = ReaderBridge(chapter.index, onSelection, onLocation, onToggleChrome, onFootnote)
+                addJavascriptInterface(requireNotNull(readerBridge), "PXReaderBridge")
                 webViewClient = object : WebViewClient() {
                     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                         loader?.shouldInterceptRequest(request.url) ?: super.shouldInterceptRequest(view, request)
@@ -232,17 +236,20 @@ private fun ReaderWebView(
 
                     override fun onPageFinished(view: WebView, url: String) {
                         val readerView = view as? PxReaderWebView ?: return
+                        if (readerView.isReleased) return
                         // A WebView may retain its native horizontal offset while replacing HTML.
                         // Reset it before the column geometry is created, then restore the source
                         // locator after layout has a measurable first text node.
                         readerView.scrollTo(0, 0)
                         readerView.post {
+                            if (readerView.isReleased) return@post
                             readerView.evaluateJavascript(BRIDGE_SCRIPT, null)
                             readerView.evaluateJavascript(readerView.themeScript, null)
                             readerView.appliedThemeScript = readerView.themeScript
                             readerView.evaluateJavascript(readerView.highlightScript, null)
+                            readerView.appliedHighlightScript = readerView.highlightScript
                             readerView.evaluateJavascript(
-                                "window.PXReaderLayout && window.PXReaderLayout.restore(${readerView.restoreCharOffset}, ${JSONObject.quote(readerView.restoreAnchor ?: "")});",
+                                "window.PXReaderLayout && window.PXReaderLayout.restore(${readerView.restoreCharOffset}, ${JSONObject.quote(readerView.restoreAnchor ?: "")}, ${JSONObject.quote(readerView.restoreQuote)});",
                                 null,
                             )
                         }
@@ -255,6 +262,7 @@ private fun ReaderWebView(
             view.setBackgroundColor(backgroundArgb)
             view.restoreCharOffset = locator.charStart.coerceAtLeast(0)
             view.restoreAnchor = locator.anchor
+            view.restoreQuote = locator.quote
             view.themeScript = themePayload.script
             view.highlightScript = highlightScript(annotations)
             val contentKey = "$documentId:${chapter.index}"
@@ -272,22 +280,26 @@ private fun ReaderWebView(
                     view.evaluateJavascript(view.themeScript, null)
                     view.appliedThemeScript = view.themeScript
                 }
-                view.evaluateJavascript(view.highlightScript, null)
+                if (view.appliedHighlightScript != view.highlightScript) {
+                    view.evaluateJavascript(view.highlightScript, null)
+                    view.appliedHighlightScript = view.highlightScript
+                }
                 when {
                     view.appliedLocationRevision != locationRevision -> {
                         view.appliedLocationRevision = locationRevision
                         view.evaluateJavascript(
-                            "window.PXReaderLayout && window.PXReaderLayout.restore(${view.restoreCharOffset}, ${JSONObject.quote(view.restoreAnchor ?: "")});",
+                            "window.PXReaderLayout && window.PXReaderLayout.restore(${view.restoreCharOffset}, ${JSONObject.quote(view.restoreAnchor ?: "")}, ${JSONObject.quote(view.restoreQuote)});",
                             null,
                         )
                     }
                     themeChanged -> view.evaluateJavascript(
-                        "window.PXReaderLayout && window.PXReaderLayout.restore(${view.restoreCharOffset}, ${JSONObject.quote(view.restoreAnchor ?: "")});",
+                        "window.PXReaderLayout && window.PXReaderLayout.restore(${view.restoreCharOffset}, ${JSONObject.quote(view.restoreAnchor ?: "")}, ${JSONObject.quote(view.restoreQuote)});",
                         null,
                     )
                 }
             }
         },
+        onRelease = { view -> view.releaseReader() },
         modifier = modifier,
     )
 }
@@ -314,10 +326,26 @@ private class PxReaderWebView(context: Context) : WebView(context) {
     var loadedContentKey: String? = null
     var restoreCharOffset: Int = 0
     var restoreAnchor: String? = null
+    var restoreQuote: String = ""
     var appliedLocationRevision: Long = -1L
     var themeScript: String = ""
     var appliedThemeScript: String? = null
     var highlightScript: String = ""
+    var appliedHighlightScript: String? = null
+    var isReleased: Boolean = false
+        private set
+    var readerBridge: ReaderBridge? = null
+
+    fun releaseReader() {
+        isReleased = true
+        readerBridge?.invalidate()
+        readerBridge = null
+        cancelPendingDragFrame()
+        releaseVelocityTracker()
+        stopLoading()
+        removeJavascriptInterface("PXReaderBridge")
+        destroy()
+    }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!pagedMode) return super.onTouchEvent(event)
@@ -461,10 +489,13 @@ private class ReaderBridge(
     private val chapterIndex: Int,
     private val selection: (Int, Int, Int, String, String, String) -> Unit,
     private val location: (Int, String?) -> Unit,
-    private val toggleChrome: () -> Unit,
+    private val onToggleChrome: () -> Unit,
     private val footnote: (String, String) -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var active = true
+
+    fun invalidate() { active = false }
 
     @JavascriptInterface
     fun selection(payload: String) {
@@ -475,7 +506,7 @@ private class ReaderBridge(
             val quote = value.getString("quote")
             val prefix = value.optString("prefix")
             val suffix = value.optString("suffix")
-            mainHandler.post { selection(chapterIndex, start, end, quote, prefix, suffix) }
+            mainHandler.post { if (active) selection(chapterIndex, start, end, quote, prefix, suffix) }
         }
     }
 
@@ -485,18 +516,18 @@ private class ReaderBridge(
             val value = JSONObject(payload)
             val start = value.getInt("start")
             val anchor = value.optString("anchor").takeIf { it.isNotBlank() }
-            mainHandler.post { location(start, anchor) }
+            mainHandler.post { if (active) location(start, anchor) }
         }
     }
 
     @JavascriptInterface
-    fun toggleChrome() = mainHandler.post(toggleChrome)
+    fun toggleChrome() { mainHandler.post { if (active) onToggleChrome() } }
 
     @JavascriptInterface
     fun footnote(payload: String) {
         runCatching {
             val value = JSONObject(payload)
-            mainHandler.post { footnote(value.optString("label", "注释"), value.optString("text")) }
+            mainHandler.post { if (active) footnote(value.optString("label", "注释"), value.optString("text")) }
         }
     }
 }
@@ -616,6 +647,7 @@ private fun highlightScript(annotations: List<AnnotationEntity>): String {
                 put("start", annotation.charStart)
                 put("end", annotation.charEnd)
                 put("quote", annotation.quote)
+                put("prefix", annotation.prefix)
                 put("color", annotation.color)
             })
         }
@@ -697,8 +729,22 @@ private const val BRIDGE_SCRIPT = """
     if (!point) return;
     window.PXReaderBridge.location(JSON.stringify({start:textOffset(point.node, point.point), anchor:nodeAnchor(point.node, point.point)}));
   };
-  const rangeFor = (offset, anchor) => {
-    const point = anchorPoint(anchor) || textPoint(offset);
+  const findQuoteOffset = (quote, expected, prefix = '') => {
+    if (!quote) return -1;
+    const text = body().textContent || '';
+    let match = text.indexOf(quote), best = -1, bestScore = Infinity;
+    while (match >= 0) {
+      const before = prefix ? text.slice(Math.max(0, match - prefix.length), match) : '';
+      const prefixPenalty = prefix && before !== prefix ? text.length : 0;
+      const score = Math.abs(match - expected) + prefixPenalty;
+      if (score < bestScore) { best = match; bestScore = score; }
+      match = text.indexOf(quote, match + 1);
+    }
+    return best;
+  };
+  const rangeFor = (offset, anchor, quote) => {
+    const quoteOffset = anchor ? -1 : findQuoteOffset(quote, offset);
+    const point = anchorPoint(anchor) || textPoint(quoteOffset >= 0 ? quoteOffset : offset);
     if (!point) return null;
     const range = document.createRange(); range.setStart(point.node, Math.min(point.point, point.node.nodeValue.length)); range.collapse(true); return range;
   };
@@ -778,11 +824,11 @@ private const val BRIDGE_SCRIPT = """
   };
   window.PXReaderLayout = {
     current: () => { const point = caretAt(); return point ? {start:textOffset(point.node, point.point), anchor:nodeAnchor(point.node, point.point)} : {start:0, anchor:''}; },
-    restore: (start, anchor) => requestAnimationFrame(() => {
+    restore: (start, anchor, quote = '') => requestAnimationFrame(() => {
       stopPageAnimation();
       dragState = null;
       pageMotion = false;
-      const range = rangeFor(Number(start) || 0, anchor);
+      const range = rangeFor(Number(start) || 0, anchor, quote);
       if (range) scrollToPoint({node:range.startContainer, point:range.startOffset});
       setTimeout(report, 80);
     }),
@@ -819,12 +865,17 @@ private const val BRIDGE_SCRIPT = """
     },
   };
   const annotationColor = (color) => color === 'green' ? 'var(--px-annotation-green)' : color === 'blue' ? 'var(--px-annotation-blue)' : color === 'pink' ? 'var(--px-annotation-pink)' : color === 'orange' ? 'var(--px-annotation-orange)' : 'var(--px-annotation-yellow)';
-  const markRange = (start, end, color, id) => {
+  const markRange = (start, end, color, id, quote, prefix) => {
+    const quoteOffset = findQuoteOffset(quote, start, prefix);
+    if (quoteOffset >= 0) { start = quoteOffset; end = quoteOffset + quote.length; }
     if (end <= start) return;
-    const nodes = []; let current, tree = walker();
+    const nodes = []; let current, tree = walker(), offset = 0;
     while ((current = tree.nextNode())) {
-      if (!current.parentElement || current.parentElement.closest('mark[data-px-annotation-id]')) continue;
-      nodes.push({node:current, start:textOffset(current, 0), end:textOffset(current, current.nodeValue.length)});
+      const next = offset + current.nodeValue.length;
+      if (current.parentElement && !current.parentElement.closest('mark[data-px-annotation-id]') && next > start && offset < end) {
+        nodes.push({node:current, start:offset, end:next});
+      }
+      offset = next;
     }
     nodes.forEach((item) => {
       if (item.end <= start || item.start >= end) return;
@@ -841,8 +892,12 @@ private const val BRIDGE_SCRIPT = """
     apply: (raw) => {
       if (body().dataset.pxHighlights === raw) return;
       let annotations = []; try { annotations = JSON.parse(raw); } catch (_) { return; }
-      annotations.sort((a,b) => Number(b.start) - Number(a.start)).forEach((item) => markRange(Number(item.start), Number(item.end), item.color, item.id));
+      const saved = window.PXReaderLayout.current();
+      body().querySelectorAll('mark[data-px-annotation-id]').forEach((mark) => mark.replaceWith(...mark.childNodes));
+      body().normalize();
+      annotations.sort((a,b) => Number(b.start) - Number(a.start)).forEach((item) => markRange(Number(item.start), Number(item.end), item.color, item.id, item.quote, item.prefix));
       body().dataset.pxHighlights = raw;
+      window.PXReaderLayout.restore(saved.start, '');
     }
   };
   let selectionTimer;
@@ -853,7 +908,7 @@ private const val BRIDGE_SCRIPT = """
       if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
       const range = selection.getRangeAt(0), quote = selection.toString().trim();
       if (!quote) return;
-      const text = body().innerText || '';
+      const text = body().textContent || '';
       const start = textOffset(range.startContainer, range.startOffset), end = textOffset(range.endContainer, range.endOffset);
       window.PXReaderBridge.selection(JSON.stringify({start,end,quote,prefix:text.slice(Math.max(0,start-48),start),suffix:text.slice(end,end+48)}));
     }, 120);

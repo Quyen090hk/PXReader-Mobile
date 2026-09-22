@@ -9,10 +9,18 @@ import io.github.quyen090hk.pxreader.data.db.ReadingPositionEntity
 import io.github.quyen090hk.pxreader.data.db.SearchUnitEntity
 import io.github.quyen090hk.pxreader.reader.DocumentReader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 data class SearchHit(
     val title: String,
@@ -23,6 +31,12 @@ data class SearchHit(
 class ReaderRepository(context: Context, private val dao: PxReaderDao) {
     private val documentsDirectory = File(context.filesDir, "documents").apply { mkdirs() }
     private val reader = DocumentReader(documentsDirectory)
+    // A navigation pop clears ReaderViewModel immediately. Keep the final position write owned
+    // by the repository, and discard older queued positions before they can overwrite it.
+    private val positionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val positionWriteMutex = Mutex()
+    private val positionSequence = AtomicLong()
+    private val latestPositionSequence = ConcurrentHashMap<String, Long>()
 
     val documents: Flow<List<DocumentEntity>> = dao.observeDocuments()
 
@@ -66,7 +80,19 @@ class ReaderRepository(context: Context, private val dao: PxReaderDao) {
     suspend fun position(documentId: String): TextLocator? = dao.position(documentId)?.toLocator()
 
     suspend fun savePosition(documentId: String, locator: TextLocator) {
-        dao.upsertPosition(locator.toEntity(documentId, System.currentTimeMillis()))
+        enqueuePositionSave(documentId, locator).join()
+    }
+
+    fun enqueuePositionSave(documentId: String, locator: TextLocator): Job {
+        val sequence = positionSequence.incrementAndGet()
+        latestPositionSequence.merge(documentId, sequence) { old, next -> maxOf(old, next) }
+        return positionScope.launch {
+            positionWriteMutex.withLock {
+                if (latestPositionSequence[documentId] == sequence) {
+                    dao.upsertPosition(locator.toEntity(documentId, System.currentTimeMillis()))
+                }
+            }
+        }
     }
 
     suspend fun addAnnotation(draft: AnnotationDraft) {

@@ -114,7 +114,7 @@ class EpubBook(private val file: File) {
         }
     }
 
-    fun chapterText(index: Int): String = Jsoup.parse(chapterHtml(index)).text()
+    fun chapterText(index: Int): String = epubIndexedText(chapterHtml(index))
 
     fun chapterHref(index: Int): String? = packageData.spine.getOrNull(index)?.href
 

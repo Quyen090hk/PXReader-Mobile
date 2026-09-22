@@ -17,7 +17,7 @@ class AppContainer(context: Context) {
         applicationContext,
         AppDatabase::class.java,
         "pxreader.db",
-    ).addMigrations(MIGRATION_1_2).build()
+    ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
 
     val readerRepository = ReaderRepository(applicationContext, database.dao())
     val importer = DocumentImporter(applicationContext, database.dao(), readerRepository)
@@ -31,6 +31,11 @@ class AppContainer(context: Context) {
                 db.execSQL("ALTER TABLE documents ADD COLUMN sourceUri TEXT")
                 db.execSQL("ALTER TABLE documents ADD COLUMN sourcePath TEXT")
                 db.execSQL("ALTER TABLE documents ADD COLUMN coverFileName TEXT")
+            }
+        }
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE search_units ADD COLUMN contentLength INTEGER NOT NULL DEFAULT 0")
             }
         }
     }
